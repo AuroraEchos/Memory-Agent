@@ -1,4 +1,3 @@
-import os
 import asyncio
 from uuid import uuid4
 
@@ -10,7 +9,7 @@ try:
 except ImportError:
     from langgraph.checkpoint.memory import MemorySaver as InMemorySaver
 
-from memory_agent import Context, SQLiteVectorMemoryStore, build_graph
+from memory_agent import Context, SQLiteVectorMemoryStore, build_graph, load_settings
 
 
 async def run_turn(
@@ -68,12 +67,11 @@ async def print_memories(store, user_id: str, query: str = "") -> None:
 async def main() -> None:
     load_dotenv()
 
-    db_path = os.environ.get("MEMORY_DB_PATH", "./memory.db")
-    embedding_model = os.environ.get("EMBEDDING_MODEL", "./models/bge-m3")
+    settings = load_settings()
 
     store = SQLiteVectorMemoryStore(
-        db_path=db_path,
-        embedding_model=embedding_model,
+        db_path=settings.memory_db_path,
+        embedding_model=settings.embedding_model,
     )
 
     checkpointer = InMemorySaver()
@@ -83,12 +81,12 @@ async def main() -> None:
         checkpointer=checkpointer,
     )
 
-    user_id = "wenhao"
+    user_id = settings.default_user_id
     thread_id = f"test-thread-{uuid4()}"
 
     context = Context(
         user_id=user_id,
-        model=os.environ.get("MIMO_MODEL", "mimo-v2.5-pro"),
+        model=settings.llm_model,
         debug=True,
     )
 

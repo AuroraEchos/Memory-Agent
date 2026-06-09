@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +9,9 @@ from memory_agent.config import Context
 from memory_agent.llm import load_chat_model
 from memory_agent.memory_extractor import extract_and_store_memories
 from memory_agent.state import State
+
+
+logger = logging.getLogger(__name__)
 
 
 def _message_text(messages: list[Any], n: int = 3) -> str:
@@ -70,7 +74,7 @@ async def call_model(state: State, runtime: Runtime[Context]) -> dict:
         time=datetime.now().isoformat(),
     )
 
-    llm = load_chat_model(runtime.context.model)
+    llm = load_chat_model(runtime.context.model, streaming=True)
 
     # 注意：主 Agent 不再 bind_tools
     response = await llm.ainvoke(
@@ -87,13 +91,19 @@ async def extract_memory(state: State, runtime: Runtime[Context]) -> dict:
     if runtime.store is None:
         raise RuntimeError("runtime.store is None. Compile the graph with a store.")
 
-    await extract_and_store_memories(
-        messages=state.messages,
-        user_id=runtime.context.user_id,
-        store=runtime.store,
-        model_name=runtime.context.model,
-        debug=runtime.context.debug,
-    )
+    try:
+        await extract_and_store_memories(
+            messages=state.messages,
+            user_id=runtime.context.user_id,
+            store=runtime.store,
+            model_name=runtime.context.model,
+            debug=runtime.context.debug,
+        )
+    except Exception as exc:
+        logger.exception("Memory extraction failed")
+        if runtime.context.debug:
+            print("\n=== Memory Extractor Error ===")
+            print(f"{type(exc).__name__}: {exc}")
 
     return {}
 

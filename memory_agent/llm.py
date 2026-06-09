@@ -1,17 +1,39 @@
-import os
 import httpx
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
+from memory_agent.config import load_settings
 
-    if value is None:
-        return default
 
-    return value.lower() in {"1", "true", "yes", "on"}
+_HTTP_CLIENTS: dict[bool, tuple[httpx.Client, httpx.AsyncClient]] = {}
 
-def load_chat_model(model_name: str) -> BaseChatModel:
+
+def _get_http_clients(trust_env: bool) -> tuple[httpx.Client, httpx.AsyncClient]:
+    clients = _HTTP_CLIENTS.get(trust_env)
+
+    if clients is None:
+        clients = (
+            httpx.Client(trust_env=trust_env),
+            httpx.AsyncClient(trust_env=trust_env),
+        )
+        _HTTP_CLIENTS[trust_env] = clients
+
+    return clients
+
+
+async def close_llm_clients() -> None:
+    for client, async_client in _HTTP_CLIENTS.values():
+        client.close()
+        await async_client.aclose()
+
+    _HTTP_CLIENTS.clear()
+
+
+def load_chat_model(
+    model_name: str | None = None,
+    *,
+    streaming: bool | None = None,
+) -> BaseChatModel:
     """
     Load a chat model based on the provided model name.
 
@@ -21,25 +43,26 @@ def load_chat_model(model_name: str) -> BaseChatModel:
     Returns:
         BaseChatModel: An instance of the loaded chat model.
     """
-    # Load environment variables for LLM configuration
-    llm_api_key = os.getenv("LLM_API_KEY")
-    llm_base_url = os.getenv("LLM_BASE_URL")
-    llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
-    llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "2048"))
-    llm_timeout = int(os.getenv("LLM_TIMEOUT", "30"))
-    llm_trust_env = _env_bool("LLM_TRUST_ENV", default=False)
+    settings = load_settings()
 
-    # Initialize and return the chat model
+    if not settings.llm_api_key:
+        raise RuntimeError("Missing LLM_API_KEY in .env")
+
+    if not settings.llm_base_url:
+        raise RuntimeError("Missing LLM_BASE_URL in .env")
+
+    http_client, http_async_client = _get_http_clients(settings.llm_trust_env)
+
     return init_chat_model(
-        model=model_name,
+        model=model_name or settings.llm_model,
         model_provider="openai",
-        api_key=llm_api_key,
-        base_url=llm_base_url,
-        temperature=llm_temperature,
-        max_tokens=llm_max_tokens,
-        timeout=llm_timeout,
-        http_client=httpx.Client(trust_env=llm_trust_env),
-        http_async_client=httpx.AsyncClient(trust_env=llm_trust_env),
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        temperature=settings.llm_temperature,
+        max_tokens=settings.llm_max_tokens,
+        timeout=settings.llm_timeout,
+        http_client=http_client,
+        http_async_client=http_async_client,
         http_socket_options=(),
-        streaming=True,
+        streaming=settings.llm_streaming if streaming is None else streaming,
     )

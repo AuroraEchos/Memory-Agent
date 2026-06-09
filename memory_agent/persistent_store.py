@@ -29,7 +29,7 @@ class SQLiteVectorMemoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
         return conn
     
@@ -199,7 +199,7 @@ class SQLiteVectorMemoryStore:
         query = query or ""
 
         sql = """
-        SELECT key, value, embedding
+        SELECT key, value, embedding, updated_at
         FROM memories
         WHERE namespace = ?
         """
@@ -208,6 +208,22 @@ class SQLiteVectorMemoryStore:
         if filter and filter.get("category"):
             sql += " AND category = ?"
             params.append(filter["category"])
+
+        if not query.strip():
+            sql += " ORDER BY updated_at DESC LIMIT ?"
+            params.append(limit)
+
+            with self._connect() as conn:
+                rows = conn.execute(sql, params).fetchall()
+
+            return [
+                MemoryItem(
+                    key=row["key"],
+                    value=json.loads(row["value"]),
+                    score=None,
+                )
+                for row in rows
+            ]
 
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()

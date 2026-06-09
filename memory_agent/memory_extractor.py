@@ -79,7 +79,19 @@ class MemoryExtractionResult(BaseModel):
                 if key in data:
                     return {"memories": data[key]}
 
-            if "action" in data or "decision" in data:
+            if any(
+                key in data
+                for key in (
+                    "action",
+                    "decision",
+                    "id",
+                    "memory_id",
+                    "content",
+                    "memory",
+                    "fact",
+                    "preference",
+                )
+            ):
                 return {"memories": [data]}
 
         return data
@@ -169,7 +181,7 @@ Return a JSON object using exactly this shape:
 If there is no durable information to store, return one item with action="ignore".
 """
 
-    llm = load_chat_model(model_name)
+    llm = load_chat_model(model_name, streaming=False)
 
     extractor = llm.with_structured_output(MemoryExtractionResult)
     result: MemoryExtractionResult = await extractor.ainvoke(
@@ -189,7 +201,8 @@ If there is no durable information to store, return one item with action="ignore
         if not decision.content:
             continue
 
-        mem_id = decision.memory_id if decision.action == "update" else str(uuid.uuid4())
+        mem_id = decision.memory_id if decision.action == "update" else None
+        mem_id = mem_id or str(uuid.uuid4())
 
         value = {
             "content": decision.content,
