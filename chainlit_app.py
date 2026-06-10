@@ -349,6 +349,3 @@ async def new_thread(action: cl.Action):
         ),
         actions=message_actions(),
     ).send()
-
-
-# env -u DEBUG chainlit run chainlit_app.py -w --host 127.0.0.1 --port 8000

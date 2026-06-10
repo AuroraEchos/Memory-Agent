@@ -226,3 +226,6 @@ chainlit.md
 .vscode/
 
 models/
+
+memory.db-shm
+memory.db-wal
