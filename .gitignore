@@ -219,6 +219,7 @@ __marimo__/
 
 # DB
 *.db
+data/
 
 chainlit.md
 .chainlit/

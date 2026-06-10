@@ -22,6 +22,8 @@ after each turn.
 ```text
 .
 ├── chainlit_app.py              # Chainlit web UI entrypoint
+├── docker-compose.yml           # Docker Compose runtime configuration
+├── Dockerfile                   # Lightweight application image
 ├── main.py                      # CLI demo entrypoint
 ├── memory_agent/
 │   ├── chainlit_ui.py           # Chainlit UI/session helpers
@@ -44,6 +46,79 @@ after each turn.
 
 The project was developed against the dependency versions pinned in
 `pyproject.toml`.
+
+## Quick Start With Docker
+
+Docker is the fastest way for another user to run the Chainlit app without
+managing a local Python environment.
+
+Create your environment file:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set at least:
+
+```bash
+LLM_API_KEY=replace-with-your-api-key
+LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
+LLM_MODEL=your-model-name
+```
+
+On Linux, keep `APP_UID=1000` and `APP_GID=1000` for the common default user,
+or change them to the output of `id -u` and `id -g` before building the image.
+The container runs as this non-root user so mounted memory files stay editable
+on the host.
+
+Download the embedding model on the host machine:
+
+```bash
+mkdir -p data models
+python3 - <<'PY'
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("BAAI/bge-m3")
+model.save("./models/bge-m3")
+PY
+```
+
+Start the app:
+
+```bash
+docker compose up --build
+```
+
+Open:
+
+```text
+http://127.0.0.1:8000
+```
+
+The Docker setup is intentionally lightweight:
+
+- The image contains the app code and Python dependencies.
+- PyTorch is installed from the CPU wheel index, so the image does not pull
+  CUDA/GPU runtime packages by default.
+- The app runs as a non-root user configured by `APP_UID` and `APP_GID`.
+- The downloaded embedding model is mounted from `./models`.
+- Long-term memories are persisted under `./data/memory.db`.
+- `.env` is read at runtime and is never copied into the image.
+
+If you want to use a different embedding model, save it under `./models` and
+update `EMBEDDING_MODEL` in `docker-compose.yml` to the matching container path.
+
+To stop the app:
+
+```bash
+docker compose down
+```
+
+To reset local memories:
+
+```bash
+rm -rf data
+```
 
 ## Setup
 
@@ -101,8 +176,10 @@ The application reads configuration from `.env`.
 | `LLM_TIMEOUT` | `30` | LLM request timeout in seconds. |
 | `LLM_TRUST_ENV` | `false` | Whether HTTP clients should use proxy variables from the environment. |
 | `LLM_STREAMING` | `true` | Whether normal chat responses should stream. |
-| `MEMORY_DB_PATH` | `./memory.db` | SQLite database path for long-term memories. |
-| `EMBEDDING_MODEL` | `./models/bge-m3` | Local or Hugging Face embedding model path. |
+| `MEMORY_DB_PATH` | `./memory.db` | SQLite database path for long-term memories. Docker Compose overrides this to `/app/data/memory.db`. |
+| `EMBEDDING_MODEL` | `./models/bge-m3` | Local or Hugging Face embedding model path. Docker Compose overrides this to `/app/models/bge-m3`. |
+| `APP_UID` | `1000` | Docker image user id used by Compose build args. |
+| `APP_GID` | `1000` | Docker image group id used by Compose build args. |
 | `DEFAULT_USER_ID` | `user_001` | Default user namespace for memories. |
 | `APP_DEBUG` | `false` | Enables extra backend debug output. |
 
@@ -151,6 +228,7 @@ The repository ignores local runtime artifacts:
 
 - `.env`
 - `*.db`
+- `data/`
 - `models/`
 - `.chainlit/`
 - `chainlit.md`

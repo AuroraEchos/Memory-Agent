@@ -1,0 +1,18 @@
+services:
+  memory-agent:
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    env_file:
+      - .env
+    environment:
+      MEMORY_DB_PATH: /app/data/memory.db
+      EMBEDDING_MODEL: /app/models/bge-m3
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models:ro
+    restart: unless-stopped

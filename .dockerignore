@@ -1,0 +1,16 @@
+.chainlit/
+.env
+.envrc
+.files/
+.git/
+.gitignore
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vscode/
+__pycache__/
+*.db
+*.py[cod]
+chainlit.md
+data/
+models/
