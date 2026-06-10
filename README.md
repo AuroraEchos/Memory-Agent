@@ -22,6 +22,7 @@ after each turn.
 ```text
 .
 ├── chainlit_app.py              # Chainlit web UI entrypoint
+├── docker-compose.gpu.yml       # Optional NVIDIA GPU Compose override
 ├── docker-compose.yml           # Docker Compose runtime configuration
 ├── Dockerfile                   # Lightweight application image
 ├── main.py                      # CLI demo entrypoint
@@ -83,7 +84,7 @@ model.save("./models/bge-m3")
 PY
 ```
 
-Start the app:
+Start the CPU app:
 
 ```bash
 docker compose up --build
@@ -98,8 +99,8 @@ http://127.0.0.1:8000
 The Docker setup is intentionally lightweight:
 
 - The image contains the app code and Python dependencies.
-- PyTorch is installed from the CPU wheel index, so the image does not pull
-  CUDA/GPU runtime packages by default.
+- The default Compose file installs the CPU PyTorch wheel, so machines without
+  a GPU can run the app predictably.
 - The app runs as a non-root user configured by `APP_UID` and `APP_GID`.
 - The downloaded embedding model is mounted from `./models`.
 - Long-term memories are persisted under `./data/memory.db`.
@@ -107,6 +108,34 @@ The Docker setup is intentionally lightweight:
 
 If you want to use a different embedding model, save it under `./models` and
 update `EMBEDDING_MODEL` in `docker-compose.yml` to the matching container path.
+
+### Docker With NVIDIA GPU
+
+GPU support is optional. It is useful for faster local embedding inference, but
+it requires an NVIDIA GPU, a working host driver, and NVIDIA Container Toolkit
+configured for Docker. The Compose GPU reservation format follows Docker's
+official GPU support guide:
+https://docs.docker.com/compose/how-tos/gpu-support/
+
+Start the GPU app:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+```
+
+The GPU override switches the image to the CUDA 12.6 PyTorch wheel and asks
+Docker Compose to reserve NVIDIA GPU devices for the service. Keep
+`EMBEDDING_DEVICE=auto` to use CUDA when it is available, or set it explicitly:
+
+```bash
+EMBEDDING_DEVICE=cuda
+```
+
+You can limit GPU access by setting:
+
+```bash
+GPU_COUNT=1
+```
 
 To stop the app:
 
@@ -178,6 +207,7 @@ The application reads configuration from `.env`.
 | `LLM_STREAMING` | `true` | Whether normal chat responses should stream. |
 | `MEMORY_DB_PATH` | `./memory.db` | SQLite database path for long-term memories. Docker Compose overrides this to `/app/data/memory.db`. |
 | `EMBEDDING_MODEL` | `./models/bge-m3` | Local or Hugging Face embedding model path. Docker Compose overrides this to `/app/models/bge-m3`. |
+| `EMBEDDING_DEVICE` | `auto` | Embedding device. Use `auto`, `cpu`, `cuda`, or a device id such as `cuda:0`. |
 | `APP_UID` | `1000` | Docker image user id used by Compose build args. |
 | `APP_GID` | `1000` | Docker image group id used by Compose build args. |
 | `DEFAULT_USER_ID` | `user_001` | Default user namespace for memories. |

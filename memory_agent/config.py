@@ -61,6 +61,7 @@ class AppSettings:
     llm_streaming: bool
     memory_db_path: str
     embedding_model: str
+    embedding_device: str
     default_user_id: str
     debug: bool
 
@@ -77,6 +78,7 @@ def load_settings() -> AppSettings:
         llm_streaming=env_bool("LLM_STREAMING", True),
         memory_db_path=env_str("MEMORY_DB_PATH", "./memory.db") or "./memory.db",
         embedding_model=env_str("EMBEDDING_MODEL", "./models/bge-m3") or "./models/bge-m3",
+        embedding_device=env_str("EMBEDDING_DEVICE", "auto") or "auto",
         default_user_id=env_str("DEFAULT_USER_ID", "default_user") or "default_user",
         debug=env_bool("APP_DEBUG", False),
     )

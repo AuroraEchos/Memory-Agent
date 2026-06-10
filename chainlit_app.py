@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 store = SQLiteVectorMemoryStore(
     db_path=settings.memory_db_path,
     embedding_model=settings.embedding_model,
+    embedding_device=settings.embedding_device,
 )
 
 checkpointer = InMemorySaver()

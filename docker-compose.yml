@@ -5,11 +5,14 @@ services:
       args:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
+        TORCH_PACKAGE: ${TORCH_PACKAGE:-torch==2.12.0+cpu}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     env_file:
       - .env
     environment:
       MEMORY_DB_PATH: /app/data/memory.db
       EMBEDDING_MODEL: /app/models/bge-m3
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-auto}
     ports:
       - "8000:8000"
     volumes:

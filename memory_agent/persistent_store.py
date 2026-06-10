@@ -22,14 +22,30 @@ class SQLiteVectorMemoryStore:
     def __init__(
         self,
         db_path: str = "./memory.db",
-        embedding_model: str = "BAAI/bge-m3"
+        embedding_model: str = "BAAI/bge-m3",
+        embedding_device: str = "auto",
     ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self.encoder = SentenceTransformer(embedding_model, device="cpu")
+        self.embedding_device = self._resolve_embedding_device(embedding_device)
+        self.encoder = SentenceTransformer(embedding_model, device=self.embedding_device)
         self._encoder_lock = threading.Lock()
         self._init_db()
+
+    @staticmethod
+    def _resolve_embedding_device(device: str) -> str:
+        normalized = device.strip().lower()
+
+        if normalized != "auto":
+            return normalized
+
+        try:
+            import torch
+        except ImportError:
+            return "cpu"
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
