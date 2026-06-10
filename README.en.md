@@ -216,7 +216,8 @@ The application reads configuration from `.env`.
 | `LLM_API_KEY` | none | API key for the LLM endpoint. |
 | `LLM_BASE_URL` | none | OpenAI-compatible base URL, usually ending with `/v1`. |
 | `LLM_TEMPERATURE` | `0.7` | Sampling temperature. |
-| `LLM_MAX_TOKENS` | `2048` | Maximum output tokens. |
+| `LLM_MAX_COMPLETION_TOKENS` | `2048` | Maximum completion tokens passed as `max_completion_tokens` to the OpenAI-compatible API. |
+| `LLM_MAX_TOKENS` | none | Legacy compatibility variable; used only when `LLM_MAX_COMPLETION_TOKENS` is not set. |
 | `LLM_TIMEOUT` | `30` | LLM request timeout in seconds. |
 | `LLM_TRUST_ENV` | `false` | Whether HTTP clients should use proxy variables from the environment. |
 | `LLM_STREAMING` | `true` | Whether normal chat responses should stream. |

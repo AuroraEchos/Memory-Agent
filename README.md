@@ -205,7 +205,8 @@ PY
 | `LLM_API_KEY` | none | LLM endpoint 的 API Key。 |
 | `LLM_BASE_URL` | none | OpenAI-compatible base URL，通常以 `/v1` 结尾。 |
 | `LLM_TEMPERATURE` | `0.7` | 采样温度。 |
-| `LLM_MAX_TOKENS` | `2048` | 最大输出 token 数。 |
+| `LLM_MAX_COMPLETION_TOKENS` | `2048` | 最大 completion token 数，会作为 `max_completion_tokens` 传给 OpenAI-compatible API。 |
+| `LLM_MAX_TOKENS` | none | 旧版兼容变量；仅在未设置 `LLM_MAX_COMPLETION_TOKENS` 时作为 fallback。 |
 | `LLM_TIMEOUT` | `30` | LLM 请求超时时间（秒）。 |
 | `LLM_TRUST_ENV` | `false` | HTTP 客户端是否使用环境变量中的代理配置。 |
 | `LLM_STREAMING` | `true` | 普通聊天回复是否启用流式输出。 |

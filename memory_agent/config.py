@@ -27,6 +27,21 @@ def env_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {value!r}") from exc
 
 
+def env_int_any(names: tuple[str, ...], default: int) -> int:
+    for name in names:
+        value = os.getenv(name)
+
+        if value is None:
+            continue
+
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+
+    return default
+
+
 def env_float(name: str, default: float) -> float:
     value = os.getenv(name)
 
@@ -55,7 +70,7 @@ class AppSettings:
     llm_api_key: str | None
     llm_base_url: str | None
     llm_temperature: float
-    llm_max_tokens: int
+    llm_max_completion_tokens: int
     llm_timeout: int
     llm_trust_env: bool
     llm_streaming: bool
@@ -72,7 +87,10 @@ def load_settings() -> AppSettings:
         llm_api_key=env_str("LLM_API_KEY"),
         llm_base_url=env_str("LLM_BASE_URL"),
         llm_temperature=env_float("LLM_TEMPERATURE", 0.7),
-        llm_max_tokens=env_int("LLM_MAX_TOKENS", 2048),
+        llm_max_completion_tokens=env_int_any(
+            ("LLM_MAX_COMPLETION_TOKENS", "LLM_MAX_TOKENS"),
+            2048,
+        ),
         llm_timeout=env_int("LLM_TIMEOUT", 30),
         llm_trust_env=env_bool("LLM_TRUST_ENV", False),
         llm_streaming=env_bool("LLM_STREAMING", True),
