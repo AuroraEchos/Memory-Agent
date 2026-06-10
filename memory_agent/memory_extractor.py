@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -5,6 +6,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from memory_agent.llm import load_chat_model
+
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryDecision(BaseModel):
@@ -183,14 +187,55 @@ If there is no durable information to store, return one item with action="ignore
 
     llm = load_chat_model(model_name, streaming=False)
 
-    extractor = llm.with_structured_output(MemoryExtractionResult)
-    result: MemoryExtractionResult = await extractor.ainvoke(
+    extractor = llm.with_structured_output(
+        MemoryExtractionResult,
+        include_raw=True,
+    )
+    raw_result = await extractor.ainvoke(
         prompt,
         config={
             "callbacks": [],
             "tags": ["memory_extractor"],
         },
     )
+
+    if isinstance(raw_result, MemoryExtractionResult):
+        result = raw_result
+    elif isinstance(raw_result, dict):
+        parsing_error = raw_result.get("parsing_error")
+        if parsing_error is not None:
+            logger.warning("Memory extraction parsing failed: %s", parsing_error)
+            if debug:
+                print("\n=== Memory Extractor Parse Error ===")
+                print(parsing_error)
+            return []
+
+        parsed = raw_result.get("parsed")
+        if parsed is None:
+            logger.warning("Memory extraction returned no parsed result")
+            return []
+
+        try:
+            result = (
+                parsed
+                if isinstance(parsed, MemoryExtractionResult)
+                else MemoryExtractionResult.model_validate(parsed)
+            )
+        except Exception as exc:
+            logger.warning(
+                "Memory extraction parsed payload failed validation: %s",
+                exc,
+            )
+            if debug:
+                print("\n=== Memory Extractor Validation Error ===")
+                print(exc)
+            return []
+    else:
+        logger.warning(
+            "Memory extraction returned unsupported result type: %s",
+            type(raw_result).__name__,
+        )
+        return []
 
     saved: list[MemoryDecision] = []
 

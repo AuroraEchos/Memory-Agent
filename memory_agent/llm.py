@@ -1,3 +1,5 @@
+import threading
+
 import httpx
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
@@ -6,27 +8,31 @@ from memory_agent.config import load_settings
 
 
 _HTTP_CLIENTS: dict[bool, tuple[httpx.Client, httpx.AsyncClient]] = {}
+_HTTP_CLIENT_LOCK = threading.Lock()
 
 
 def _get_http_clients(trust_env: bool) -> tuple[httpx.Client, httpx.AsyncClient]:
-    clients = _HTTP_CLIENTS.get(trust_env)
+    with _HTTP_CLIENT_LOCK:
+        clients = _HTTP_CLIENTS.get(trust_env)
 
-    if clients is None:
-        clients = (
-            httpx.Client(trust_env=trust_env),
-            httpx.AsyncClient(trust_env=trust_env),
-        )
-        _HTTP_CLIENTS[trust_env] = clients
+        if clients is None:
+            clients = (
+                httpx.Client(trust_env=trust_env),
+                httpx.AsyncClient(trust_env=trust_env),
+            )
+            _HTTP_CLIENTS[trust_env] = clients
 
-    return clients
+        return clients
 
 
 async def close_llm_clients() -> None:
-    for client, async_client in _HTTP_CLIENTS.values():
+    with _HTTP_CLIENT_LOCK:
+        clients = list(_HTTP_CLIENTS.values())
+        _HTTP_CLIENTS.clear()
+
+    for client, async_client in clients:
         client.close()
         await async_client.aclose()
-
-    _HTTP_CLIENTS.clear()
 
 
 def load_chat_model(

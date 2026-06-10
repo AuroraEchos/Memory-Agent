@@ -58,11 +58,18 @@ async def call_model(state: State, runtime: Runtime[Context]) -> dict:
     user_id = runtime.context.user_id
     query = _message_text(state.messages, n=3)
 
-    memories = await runtime.store.asearch(
-        ("memories", user_id),
-        query=query,
-        limit=10,
-    )
+    try:
+        memories = await runtime.store.asearch(
+            ("memories", user_id),
+            query=query,
+            limit=10,
+        )
+    except Exception as exc:
+        logger.exception("Memory retrieval failed")
+        if runtime.context.debug:
+            print("\n=== Memory Retrieval Error ===")
+            print(f"{type(exc).__name__}: {exc}")
+        memories = []
 
     if runtime.context.debug:
         print("\n=== Retrieved Memories ===")

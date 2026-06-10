@@ -1,5 +1,7 @@
+import asyncio
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,15 +28,20 @@ class SQLiteVectorMemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.encoder = SentenceTransformer(embedding_model, device="cpu")
+        self._encoder_lock = threading.Lock()
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn
     
     def _init_db(self) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memories (
@@ -71,10 +78,11 @@ class SQLiteVectorMemoryStore:
         return "/".join(namespace)
     
     def _embed(self, text: str) -> list[float]:
-        vector = self.encoder.encode(
-            text,
-            normalize_embeddings=True
-        )
+        with self._encoder_lock:
+            vector = self.encoder.encode(
+                text,
+                normalize_embeddings=True
+            )
 
         return vector.astype(float).tolist()
     
@@ -95,6 +103,14 @@ class SQLiteVectorMemoryStore:
         key: str,
         value: dict[str, Any],
         **_: Any,
+    ) -> None:
+        await asyncio.to_thread(self._put_sync, namespace, key, value)
+
+    def _put_sync(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
     ) -> None:
         namespace_str = self._namespace_to_str(namespace)
 
@@ -151,6 +167,13 @@ class SQLiteVectorMemoryStore:
         key: str,
         **_: Any,
     ) -> MemoryItem | None:
+        return await asyncio.to_thread(self._get_sync, namespace, key)
+
+    def _get_sync(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+    ) -> MemoryItem | None:
         namespace_str = self._namespace_to_str(namespace)
 
         with self._connect() as conn:
@@ -176,6 +199,13 @@ class SQLiteVectorMemoryStore:
         namespace: tuple[str, ...],
         key: str,
     ) -> None:
+        await asyncio.to_thread(self._delete_sync, namespace, key)
+
+    def _delete_sync(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+    ) -> None:
         namespace_str = self._namespace_to_str(namespace)
 
         with self._connect() as conn:
@@ -195,8 +225,24 @@ class SQLiteVectorMemoryStore:
         filter: dict[str, Any] | None = None,
         **_: Any,
     ) -> list[MemoryItem]:
+        return await asyncio.to_thread(
+            self._search_sync,
+            namespace,
+            query,
+            limit,
+            filter,
+        )
+
+    def _search_sync(
+        self,
+        namespace: tuple[str, ...],
+        query: str | None = None,
+        limit: int = 10,
+        filter: dict[str, Any] | None = None,
+    ) -> list[MemoryItem]:
         namespace_str = self._namespace_to_str(namespace)
         query = query or ""
+        limit = max(1, int(limit))
 
         sql = """
         SELECT key, value, embedding, updated_at
