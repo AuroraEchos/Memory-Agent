@@ -12,7 +12,8 @@ after each turn.
 ## Features
 
 - LangGraph conversation flow with a per-thread short-term checkpoint.
-- SQLite-backed long-term memory store.
+- Short-term thread checkpoints are stored in-memory by default and are lost on restart.
+- Long-term memories are stored in a SQLite database with persistence and query support.
 - Local `sentence-transformers` embedding model for semantic memory search.
 - OpenAI-compatible chat model configuration.
 - Chainlit UI with streaming responses.
