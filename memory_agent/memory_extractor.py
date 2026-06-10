@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from memory_agent.llm import load_chat_model
+from memory_agent.prompts import MEMORY_EXTRACTION_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -139,51 +140,10 @@ async def extract_and_store_memories(
         limit=10,
     )
 
-    prompt = f"""You are a memory extraction model.
-
-Your job is to decide whether the latest user message contains durable information
-that should be stored as long-term memory.
-
-Store only:
-- stable personal facts
-- long-term preferences
-- recurring instructions
-- durable goals
-- corrections to existing memory
-
-Do not store:
-- secrets
-- API keys
-- passwords
-- temporary requests
-- one-off tasks
-- highly sensitive information
-
-If new information conflicts with an existing memory, return action="update"
-and use that existing memory_id.
-
-Existing memories:
-{_format_existing_memories(existing)}
-
-Latest user message:
-{user_text}
-
-Return a JSON object using exactly this shape:
-{{
-  "memories": [
-    {{
-      "action": "create|update|ignore",
-      "memory_id": "existing memory id when action is update, otherwise null",
-      "content": "concise durable memory, or null when action is ignore",
-      "context": "brief background, or empty string",
-      "category": "general",
-      "confidence": 1.0
-    }}
-  ]
-}}
-
-If there is no durable information to store, return one item with action="ignore".
-"""
+    prompt = MEMORY_EXTRACTION_PROMPT.format(
+        existing_memories=_format_existing_memories(existing),
+        user_text=user_text,
+    )
 
     llm = load_chat_model(model_name, streaming=False)
 

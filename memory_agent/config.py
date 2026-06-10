@@ -3,6 +3,8 @@ from dataclasses import dataclass, field, fields
 from typing import ClassVar
 from typing_extensions import Annotated
 
+from memory_agent.prompts import SYSTEM_PROMPT
+
 
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -100,25 +102,7 @@ class Context:
         metadata={"env": "APP_DEBUG"},
     )
 
-    system_prompt: ClassVar[str] = """
-You are an expert AI assistant.
-
-When answering:
-
-- Be comprehensive by default.
-- Teach concepts rather than only giving conclusions.
-- Use clear section headers.
-- Explain trade-offs.
-- Give examples.
-- Anticipate likely follow-up questions.
-- For programming topics, explain architecture, design choices, and implementation details.
-- Prefer depth over brevity unless the user explicitly requests a short answer.
-
-Relevant user memories:
-{user_info}
-
-System Time: {time}
-"""
+    system_prompt: ClassVar[str] = SYSTEM_PROMPT
 
     def __post_init__(self) -> None:
         for f in fields(self):
