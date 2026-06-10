@@ -76,6 +76,12 @@ on the host.
 
 Download the embedding model on the host machine:
 
+If downloads are slow, set a Hugging Face mirror first:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
 ```bash
 mkdir -p data models
 python3 - <<'PY'
@@ -181,6 +187,12 @@ LLM_MODEL=your-model-name
 ```
 
 Download the embedding model into the default local path:
+
+If downloads are slow, set a Hugging Face mirror first:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+```
 
 ```bash
 python - <<'PY'
