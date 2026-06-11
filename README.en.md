@@ -3,7 +3,7 @@
 [中文](./README.md) | [English](./README.en.md)
 
 Memory Agent is a long-term memory chatbot built with LangGraph, Chainlit,
-Qdrant, and a local embedding model.
+Qdrant, and service-ready embedding.
 
 The app stores user memories in Qdrant, retrieves relevant memories with
 semantic search before each response, and extracts durable memory updates after
@@ -15,7 +15,8 @@ each turn.
 - Short-term thread checkpoints are stored in memory by default and are lost on restart.
 - Long-term memories are stored in Qdrant with vector search, remote service,
   and local persistence support.
-- Local `sentence-transformers` embedding model for semantic memory search.
+- Local or remote embedding provider. Docker moves embedding inference out of
+  the main Chainlit process by default.
 - OpenAI-compatible chat model configuration.
 - Chainlit UI with streaming responses.
 - Memory viewing, searching, deletion confirmation, and current-context display.
@@ -27,12 +28,18 @@ each turn.
 .
 ├── chainlit_app.py              # Chainlit web UI entrypoint
 ├── docker-compose.gpu.yml       # Optional NVIDIA GPU Compose override
-├── docker-compose.yml           # Docker Compose runtime configuration with Qdrant
+├── docker-compose.yml           # Docker Compose runtime with Qdrant and embedding
 ├── Dockerfile                   # Application image
+├── embedding_server.py          # FastAPI embedding service entrypoint
 ├── main.py                      # CLI demo entrypoint
 ├── memory_agent/
 │   ├── chainlit_ui.py           # Chainlit UI/session helpers
 │   ├── config.py                # Environment-backed settings
+│   ├── embedding/
+│   │   ├── base.py              # Embedding provider protocol
+│   │   ├── factory.py           # Embedding provider factory
+│   │   ├── local.py             # Local sentence-transformers provider
+│   │   └── remote.py            # HTTP embedding service provider
 │   ├── graph.py                 # LangGraph nodes and graph builder
 │   ├── llm.py                   # OpenAI-compatible chat model loader
 │   ├── memory_extractor.py      # Durable memory extraction logic
@@ -51,15 +58,15 @@ each turn.
 - Python 3.12 or newer.
 - An OpenAI-compatible chat completion endpoint.
 - Qdrant service, or local persistence mode through `qdrant-client`.
-- Enough disk space for the local embedding model.
+- Enough disk space for the embedding model.
 
 The project was developed against the dependency versions pinned in
 `pyproject.toml`.
 
 ## Quick Start With Docker
 
-Docker Compose starts both Memory Agent and Qdrant, and is the recommended quick
-start path.
+Docker Compose starts Memory Agent, the embedding service, and Qdrant, and is
+the recommended quick start path.
 
 Create your environment file:
 
@@ -111,20 +118,27 @@ http://127.0.0.1:8000
 
 Docker setup notes:
 
-- The default Compose file starts a dedicated `qdrant` service.
+- The default Compose file starts dedicated `embedding-service` and `qdrant`
+  services.
+- `memory-agent` requests vectors through
+  `EMBEDDING_SERVICE_URL=http://embedding-service:8001` and does not load the
+  embedding model in the main process.
 - Qdrant data is persisted in Docker named volume `qdrant_storage`.
 - The app connects to Qdrant through `QDRANT_URL=http://qdrant:6333`.
 - The default Compose file installs the CPU PyTorch wheel, so machines without
   a GPU can run the app predictably.
-- The downloaded embedding model is mounted from `./models`.
+- The downloaded embedding model is mounted from `./models` into
+  `embedding-service`.
 - `.env` is read at runtime and is never copied into the image.
 
 If you want to use a different embedding model, save it under `./models` and
-update `EMBEDDING_MODEL` in `docker-compose.yml` to the matching container path.
+update the `EMBEDDING_MODEL` container path in `docker-compose.yml` and
+`EMBEDDING_DIMENSION` in `.env`.
 
 ### Docker With NVIDIA GPU
 
-GPU support is optional. It is useful for faster local embedding inference, but
+GPU support is optional. It is useful for faster embedding inference in
+`embedding-service`, but
 it requires an NVIDIA GPU, a working host driver, and NVIDIA Container Toolkit
 configured for Docker. The Compose GPU reservation format follows Docker's
 official GPU support guide:
@@ -136,8 +150,8 @@ Start the GPU app:
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
 
-The GPU override switches the image to the CUDA 12.6 PyTorch wheel and asks
-Docker Compose to reserve NVIDIA GPU devices for the service. Keep
+The GPU override switches `embedding-service` to the CUDA 12.6 PyTorch wheel and
+asks Docker Compose to reserve NVIDIA GPU devices for that service. Keep
 `EMBEDDING_DEVICE=auto` to use CUDA when it is available, or set it explicitly:
 
 ```bash
@@ -211,6 +225,22 @@ PY
 For local runs, if `QDRANT_URL` is not set, the app uses local Qdrant
 persistence under `QDRANT_PATH`.
 
+Local runs use `EMBEDDING_BACKEND=local` by default, which loads the embedding
+model in the current process. To use the service-based embedding path during
+local development, start the standalone service first:
+
+```bash
+source .venv/bin/activate
+uvicorn embedding_server:app --host 127.0.0.1 --port 8001
+```
+
+Then set these before running the CLI or Chainlit app:
+
+```bash
+EMBEDDING_BACKEND=remote
+EMBEDDING_SERVICE_URL=http://127.0.0.1:8001
+```
+
 ## Configuration
 
 The application reads configuration from `.env`.
@@ -231,8 +261,15 @@ The application reads configuration from `.env`.
 | `QDRANT_API_KEY` | none | Remote Qdrant API key. |
 | `QDRANT_COLLECTION` | `agent_memories` | Qdrant collection name for long-term memories. |
 | `QDRANT_PREFER_GRPC` | `false` | Whether the Qdrant client should prefer gRPC. |
+| `EMBEDDING_BACKEND` | `local` | Embedding provider, either `local` or `remote`. Docker Compose overrides this to `remote`. |
 | `EMBEDDING_MODEL` | `./models/bge-m3` | Local or Hugging Face embedding model path. Docker Compose overrides this to `/app/models/bge-m3`. |
 | `EMBEDDING_DEVICE` | `auto` | Embedding device. Use `auto`, `cpu`, `cuda`, or a device id such as `cuda:0`. |
+| `EMBEDDING_DIMENSION` | `1024` | Current embedding model output dimension. It must match the Qdrant collection dimension. |
+| `EMBEDDING_CONCURRENCY` | `1` | Local provider or embedding service inference concurrency. |
+| `EMBEDDING_BATCH_SIZE` | `32` | Local provider or embedding service inference batch size. |
+| `EMBEDDING_SERVICE_URL` | none | Embedding service URL used when `EMBEDDING_BACKEND=remote`. |
+| `EMBEDDING_TIMEOUT` | `30` | Remote embedding request timeout in seconds. |
+| `EMBEDDING_TRUST_ENV` | `false` | Whether the remote embedding HTTP client should use proxy variables from the environment. |
 | `APP_UID` | `1000` | Docker image user id used by Compose build args. |
 | `APP_GID` | `1000` | Docker image group id used by Compose build args. |
 | `DEFAULT_USER_ID` | `user_001` | Default user namespace for memories. |
@@ -294,8 +331,10 @@ Do not commit API keys, local Qdrant data, or downloaded model weights.
 ## Notes
 
 - Memory storage is implemented in `QdrantMemoryStore`.
-- Qdrant and embedding work are executed behind async-friendly background
-  threads so Chainlit is less likely to block on local vector work.
+- `QdrantMemoryStore` only handles vector database reads and writes; embeddings
+  are supplied by `EmbeddingProvider`.
+- Docker uses the standalone `embedding-service` by default, reducing model
+  loading and inference pressure in the Chainlit main process.
 - Memory extraction failures are logged and skipped instead of breaking the
   user-facing chat turn.
 - The LLM client defaults to `LLM_TRUST_ENV=false` to avoid broken system proxy

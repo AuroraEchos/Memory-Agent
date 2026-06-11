@@ -58,10 +58,7 @@ async def _safe_search_memories(
 
 @cl.on_app_shutdown
 async def on_app_shutdown():
-    close_store = getattr(store, "close", None)
-    if close_store is not None:
-        close_store()
-
+    await store.aclose()
     await close_llm_clients()
 
 

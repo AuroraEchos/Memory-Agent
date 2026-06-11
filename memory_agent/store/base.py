@@ -43,3 +43,6 @@ class MemoryStore(Protocol):
         **kwargs: Any,
     ) -> list[MemoryItem]:
         ...
+
+    async def aclose(self) -> None:
+        ...

@@ -20,18 +20,18 @@ RUN groupadd --gid "${APP_GID}" app \
 
 COPY --chown=app:app pyproject.toml README.md LICENSE ./
 COPY --chown=app:app memory_agent ./memory_agent
-COPY --chown=app:app chainlit_app.py main.py ./
+COPY --chown=app:app chainlit_app.py embedding_server.py main.py ./
 
 # sentence-transformers depends on torch; install the requested wheel first so
 # CPU and GPU images do not accidentally resolve to a different runtime.
 RUN pip install --upgrade pip \
     && pip install --index-url "${TORCH_INDEX_URL}" "${TORCH_PACKAGE}" \
     && pip install -e . \
-    && mkdir -p /app/data /app/models /app/.files /app/.chainlit \
+    && mkdir -p /app/models /app/.files /app/.chainlit \
     && chown -R app:app /app /home/app
 
 USER app
 
-EXPOSE 8000
+EXPOSE 8000 8001
 
 CMD ["chainlit", "run", "chainlit_app.py", "--host", "0.0.0.0", "--port", "8000"]

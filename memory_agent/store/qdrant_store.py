@@ -1,5 +1,4 @@
 import asyncio
-import threading
 import time
 import uuid
 from datetime import datetime
@@ -16,34 +15,36 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
-from sentence_transformers import SentenceTransformer
 
+from memory_agent.embedding.base import EmbeddingProvider
 from memory_agent.store.base import MemoryItem
 
 
 class QdrantMemoryStore:
     """Qdrant-backed semantic memory store.
 
-    Supports:
-    - local persistent mode via QDRANT_PATH
-    - remote Qdrant server via QDRANT_URL
+    This class only handles vector database operations.
+    Embedding is delegated to EmbeddingProvider.
     """
 
     def __init__(
         self,
         *,
+        embedding_provider: EmbeddingProvider,
+        vector_size: int,
         collection_name: str = "agent_memories",
-        embedding_model: str = "./models/bge-m3",
-        embedding_device: str = "auto",
         qdrant_path: str | None = "./qdrant_data",
         qdrant_url: str | None = None,
         qdrant_api_key: str | None = None,
         prefer_grpc: bool = False,
     ) -> None:
         self.collection_name = collection_name
-        self.embedding_device = self._resolve_embedding_device(embedding_device)
-        self.encoder = SentenceTransformer(embedding_model, device=self.embedding_device)
-        self._encoder_lock = threading.Lock()
+        self.embedding_provider = embedding_provider
+        self.vector_size = int(vector_size)
+        self._closed = False
+
+        if self.vector_size <= 0:
+            raise ValueError("vector_size must be a positive integer.")
 
         if qdrant_url:
             self.client = QdrantClient(
@@ -56,22 +57,7 @@ class QdrantMemoryStore:
             Path(path).mkdir(parents=True, exist_ok=True)
             self.client = QdrantClient(path=path)
 
-        self.vector_size = self._detect_vector_size()
         self._ensure_collection_with_retry()
-
-    @staticmethod
-    def _resolve_embedding_device(device: str) -> str:
-        normalized = device.strip().lower()
-
-        if normalized != "auto":
-            return normalized
-
-        try:
-            import torch
-        except ImportError:
-            return "cpu"
-
-        return "cuda" if torch.cuda.is_available() else "cpu"
 
     @staticmethod
     def _namespace_to_str(namespace: tuple[str, ...]) -> str:
@@ -79,26 +65,17 @@ class QdrantMemoryStore:
 
     @staticmethod
     def _point_id(namespace: tuple[str, ...], key: str) -> str:
-        """Qdrant point id must be int or UUID.
-
-        We keep the original memory key in payload["memory_key"],
-        and use deterministic UUIDv5 as the Qdrant point id.
-        """
         raw = f"{'/'.join(namespace)}::{key}"
         return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
 
-    def _detect_vector_size(self) -> int:
-        vector = self._embed("dimension probe")
-        return len(vector)
-
-    def _embed(self, text: str) -> list[float]:
-        with self._encoder_lock:
-            vector = self.encoder.encode(
-                text,
-                normalize_embeddings=True,
+    def _validate_vector(self, vector: list[float]) -> list[float]:
+        if len(vector) != self.vector_size:
+            raise ValueError(
+                "Embedding dimension mismatch: "
+                f"expected {self.vector_size}, got {len(vector)}."
             )
 
-        return vector.astype(float).tolist()
+        return vector
 
     def _ensure_collection(self) -> None:
         if self.client.collection_exists(self.collection_name):
@@ -162,13 +139,29 @@ class QdrantMemoryStore:
         value: dict[str, Any],
         **_: Any,
     ) -> None:
-        await asyncio.to_thread(self._put_sync, namespace, key, value)
+        content = str(value.get("content", ""))
+        context = str(value.get("context", ""))
+        category = str(value.get("category", "general"))
+
+        embedding_text = f"{category}\n{content}\n{context}"
+        vector = self._validate_vector(
+            await self.embedding_provider.aembed(embedding_text)
+        )
+
+        await asyncio.to_thread(
+            self._put_sync,
+            namespace,
+            key,
+            value,
+            vector,
+        )
 
     def _put_sync(
         self,
         namespace: tuple[str, ...],
         key: str,
         value: dict[str, Any],
+        vector: list[float],
     ) -> None:
         namespace_str = self._namespace_to_str(namespace)
         point_id = self._point_id(namespace, key)
@@ -182,7 +175,11 @@ class QdrantMemoryStore:
         context = str(value.get("context", ""))
         category = str(value.get("category", "general"))
 
-        created_at = str(old_value.get("created_at") or value.get("created_at") or now)
+        created_at = str(
+            old_value.get("created_at")
+            or value.get("created_at")
+            or now
+        )
 
         normalized_value = {
             **value,
@@ -192,9 +189,6 @@ class QdrantMemoryStore:
             "created_at": created_at,
             "updated_at": str(value.get("updated_at") or now),
         }
-
-        embedding_text = f"{category}\n{content}\n{context}"
-        vector = self._embed(embedding_text)
 
         payload = {
             "namespace": namespace_str,
@@ -296,40 +290,58 @@ class QdrantMemoryStore:
         filter: dict[str, Any] | None = None,
         **_: Any,
     ) -> list[MemoryItem]:
+        limit = max(1, int(limit))
+
+        if not query or not query.strip():
+            return await asyncio.to_thread(
+                self._scroll_sync,
+                namespace,
+                limit,
+                filter,
+            )
+
+        query_vector = self._validate_vector(
+            await self.embedding_provider.aembed(query)
+        )
+
         return await asyncio.to_thread(
             self._search_sync,
             namespace,
-            query,
+            query_vector,
             limit,
             filter,
         )
 
+    def _scroll_sync(
+        self,
+        namespace: tuple[str, ...],
+        limit: int,
+        filter: dict[str, Any] | None = None,
+    ) -> list[MemoryItem]:
+        qdrant_filter = self._build_filter(namespace, filter)
+
+        points, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=qdrant_filter,
+            limit=limit,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+        return [
+            self._point_to_memory_item(point, score=None)
+            for point in points
+            if point.payload
+        ]
+
     def _search_sync(
         self,
         namespace: tuple[str, ...],
-        query: str | None = None,
-        limit: int = 10,
+        query_vector: list[float],
+        limit: int,
         filter: dict[str, Any] | None = None,
     ) -> list[MemoryItem]:
-        limit = max(1, int(limit))
         qdrant_filter = self._build_filter(namespace, filter)
-
-        if not query or not query.strip():
-            points, _ = self.client.scroll(
-                collection_name=self.collection_name,
-                scroll_filter=qdrant_filter,
-                limit=limit,
-                with_payload=True,
-                with_vectors=False,
-            )
-
-            return [
-                self._point_to_memory_item(point, score=None)
-                for point in points
-                if point.payload
-            ]
-
-        query_vector = self._embed(query)
 
         if hasattr(self.client, "query_points"):
             result = self.client.query_points(
@@ -353,7 +365,10 @@ class QdrantMemoryStore:
             )
 
         return [
-            self._point_to_memory_item(point, score=getattr(point, "score", None))
+            self._point_to_memory_item(
+                point,
+                score=getattr(point, "score", None),
+            )
             for point in points
             if getattr(point, "payload", None)
         ]
@@ -380,4 +395,14 @@ class QdrantMemoryStore:
         )
 
     def close(self) -> None:
+        if self._closed:
+            return
+
         self.client.close()
+        self._closed = True
+
+    async def aclose(self) -> None:
+        try:
+            self.close()
+        finally:
+            await self.embedding_provider.aclose()

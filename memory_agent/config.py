@@ -81,8 +81,15 @@ class AppSettings:
     qdrant_collection: str
     qdrant_prefer_grpc: bool
 
+    embedding_backend: str
     embedding_model: str
     embedding_device: str
+    embedding_dimension: int
+    embedding_concurrency: int
+    embedding_batch_size: int
+    embedding_service_url: str | None
+    embedding_timeout: float
+    embedding_trust_env: bool
 
     default_user_id: str
     debug: bool
@@ -109,9 +116,16 @@ def load_settings() -> AppSettings:
         or "agent_memories",
         qdrant_prefer_grpc=env_bool("QDRANT_PREFER_GRPC", False),
 
+        embedding_backend=env_str("EMBEDDING_BACKEND", "local") or "local",
         embedding_model=env_str("EMBEDDING_MODEL", "./models/bge-m3")
         or "./models/bge-m3",
         embedding_device=env_str("EMBEDDING_DEVICE", "auto") or "auto",
+        embedding_dimension=env_int("EMBEDDING_DIMENSION", 1024),
+        embedding_concurrency=env_int("EMBEDDING_CONCURRENCY", 1),
+        embedding_batch_size=env_int("EMBEDDING_BATCH_SIZE", 32),
+        embedding_service_url=env_str("EMBEDDING_SERVICE_URL"),
+        embedding_timeout=env_float("EMBEDDING_TIMEOUT", 30.0),
+        embedding_trust_env=env_bool("EMBEDDING_TRUST_ENV", False),
 
         default_user_id=env_str("DEFAULT_USER_ID", "default_user")
         or "default_user",

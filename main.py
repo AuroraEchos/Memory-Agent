@@ -10,6 +10,7 @@ except ImportError:
     from langgraph.checkpoint.memory import MemorySaver as InMemorySaver
 
 from memory_agent import Context, build_graph, create_memory_store, load_settings
+from memory_agent.llm import close_llm_clients
 
 
 async def run_turn(
@@ -87,43 +88,47 @@ async def main() -> None:
         debug=True,
     )
 
-    await run_turn(
-        graph=graph,
-        user_id=user_id,
-        thread_id=thread_id,
-        context=context,
-        content="我喜欢用 Python 写 Agent，并且偏好代码风格简洁、类型清晰。",
-    )
+    try:
+        await run_turn(
+            graph=graph,
+            user_id=user_id,
+            thread_id=thread_id,
+            context=context,
+            content="我喜欢用 Python 写 Agent，并且偏好代码风格简洁、类型清晰。",
+        )
 
-    await print_memories(
-        store=store,
-        user_id=user_id,
-        query="用户喜欢什么代码风格？",
-    )
+        await print_memories(
+            store=store,
+            user_id=user_id,
+            query="用户喜欢什么代码风格？",
+        )
 
-    await run_turn(
-        graph=graph,
-        user_id=user_id,
-        thread_id=thread_id,
-        context=context,
-        content="其实我现在更喜欢用 Rust 写 Agent，但 Python 也还会用。",
-    )
+        await run_turn(
+            graph=graph,
+            user_id=user_id,
+            thread_id=thread_id,
+            context=context,
+            content="其实我现在更喜欢用 Rust 写 Agent，但 Python 也还会用。",
+        )
 
-    await print_memories(
-        store=store,
-        user_id=user_id,
-        query="用户喜欢用什么语言写 Agent？",
-    )
+        await print_memories(
+            store=store,
+            user_id=user_id,
+            query="用户喜欢用什么语言写 Agent？",
+        )
 
-    new_thread_id = f"new-chat-{uuid4()}"
+        new_thread_id = f"new-chat-{uuid4()}"
 
-    await run_turn(
-        graph=graph,
-        user_id=user_id,
-        thread_id=new_thread_id,
-        context=context,
-        content="新开一个对话后，你还记得我写 Agent 的语言偏好吗？",
-    )
+        await run_turn(
+            graph=graph,
+            user_id=user_id,
+            thread_id=new_thread_id,
+            context=context,
+            content="新开一个对话后，你还记得我写 Agent 的语言偏好吗？",
+        )
+    finally:
+        await store.aclose()
+        await close_llm_clients()
 
 
 if __name__ == "__main__":
