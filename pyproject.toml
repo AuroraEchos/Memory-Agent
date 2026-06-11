@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "memory-agent"
 version = "0.1.0"
-description = "A LangGraph + Chainlit memory agent with SQLite vector memory."
+description = "A LangGraph + Chainlit memory agent with Qdrant vector memory."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
@@ -21,6 +21,7 @@ dependencies = [
     "python-dotenv==1.2.2",
     "sentence-transformers==5.5.1",
     "typing-extensions==4.15.0",
+    "qdrant-client>=1.15.0",
 ]
 
 [tool.hatch.build.targets.wheel]

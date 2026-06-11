@@ -2,18 +2,19 @@
 
 [中文](./README.md) | [English](./README.en.md)
 
-Memory Agent is a small long-term memory chatbot built with LangGraph,
-Chainlit, SQLite, and a local embedding model.
+Memory Agent is a long-term memory chatbot built with LangGraph, Chainlit,
+Qdrant, and a local embedding model.
 
-The app keeps user memories in a SQLite database, retrieves relevant memories
-with semantic search before each response, and extracts durable memory updates
-after each turn.
+The app stores user memories in Qdrant, retrieves relevant memories with
+semantic search before each response, and extracts durable memory updates after
+each turn.
 
 ## Features
 
 - LangGraph conversation flow with a per-thread short-term checkpoint.
-- Short-term thread checkpoints are stored in-memory by default and are lost on restart.
-- Long-term memories are stored in a SQLite database with persistence and query support.
+- Short-term thread checkpoints are stored in memory by default and are lost on restart.
+- Long-term memories are stored in Qdrant with vector search, remote service,
+  and local persistence support.
 - Local `sentence-transformers` embedding model for semantic memory search.
 - OpenAI-compatible chat model configuration.
 - Chainlit UI with streaming responses.
@@ -26,8 +27,8 @@ after each turn.
 .
 ├── chainlit_app.py              # Chainlit web UI entrypoint
 ├── docker-compose.gpu.yml       # Optional NVIDIA GPU Compose override
-├── docker-compose.yml           # Docker Compose runtime configuration
-├── Dockerfile                   # Lightweight application image
+├── docker-compose.yml           # Docker Compose runtime configuration with Qdrant
+├── Dockerfile                   # Application image
 ├── main.py                      # CLI demo entrypoint
 ├── memory_agent/
 │   ├── chainlit_ui.py           # Chainlit UI/session helpers
@@ -35,7 +36,10 @@ after each turn.
 │   ├── graph.py                 # LangGraph nodes and graph builder
 │   ├── llm.py                   # OpenAI-compatible chat model loader
 │   ├── memory_extractor.py      # Durable memory extraction logic
-│   ├── persistent_store.py      # SQLite + embedding memory store
+│   ├── store/
+│   │   ├── base.py              # Memory store protocol
+│   │   ├── factory.py           # Qdrant store factory
+│   │   └── qdrant_store.py      # Qdrant vector memory store
 │   ├── prompts.py               # Prompt templates
 │   └── state.py                 # LangGraph state schema
 ├── pyproject.toml               # Python dependency metadata
@@ -46,6 +50,7 @@ after each turn.
 
 - Python 3.12 or newer.
 - An OpenAI-compatible chat completion endpoint.
+- Qdrant service, or local persistence mode through `qdrant-client`.
 - Enough disk space for the local embedding model.
 
 The project was developed against the dependency versions pinned in
@@ -53,8 +58,8 @@ The project was developed against the dependency versions pinned in
 
 ## Quick Start With Docker
 
-Docker is the fastest way for another user to run the Chainlit app without
-managing a local Python environment.
+Docker Compose starts both Memory Agent and Qdrant, and is the recommended quick
+start path.
 
 Create your environment file:
 
@@ -72,10 +77,9 @@ LLM_MODEL=your-model-name
 
 On Linux, keep `APP_UID=1000` and `APP_GID=1000` for the common default user,
 or change them to the output of `id -u` and `id -g` before building the image.
-The container runs as this non-root user so mounted memory files stay editable
-on the host.
+The container runs as this non-root user.
 
-Download the embedding model on the host machine:
+Download the embedding model on the host machine.
 
 If downloads are slow, set a Hugging Face mirror first:
 
@@ -84,7 +88,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 ```
 
 ```bash
-mkdir -p data models
+mkdir -p models
 python3 - <<'PY'
 from sentence_transformers import SentenceTransformer
 
@@ -105,14 +109,14 @@ Open:
 http://127.0.0.1:8000
 ```
 
-The Docker setup is intentionally lightweight:
+Docker setup notes:
 
-- The image contains the app code and Python dependencies.
+- The default Compose file starts a dedicated `qdrant` service.
+- Qdrant data is persisted in Docker named volume `qdrant_storage`.
+- The app connects to Qdrant through `QDRANT_URL=http://qdrant:6333`.
 - The default Compose file installs the CPU PyTorch wheel, so machines without
   a GPU can run the app predictably.
-- The app runs as a non-root user configured by `APP_UID` and `APP_GID`.
 - The downloaded embedding model is mounted from `./models`.
-- Long-term memories are persisted under `./data/memory.db`.
 - `.env` is read at runtime and is never copied into the image.
 
 If you want to use a different embedding model, save it under `./models` and
@@ -152,10 +156,10 @@ To stop the app:
 docker compose down
 ```
 
-To reset local memories:
+To reset Docker Qdrant data:
 
 ```bash
-rm -rf data
+docker compose down -v
 ```
 
 ## Setup
@@ -187,7 +191,7 @@ LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 LLM_MODEL=your-model-name
 ```
 
-Download the embedding model into the default local path:
+Download the embedding model into the default local path.
 
 If downloads are slow, set a Hugging Face mirror first:
 
@@ -204,7 +208,8 @@ model.save("./models/bge-m3")
 PY
 ```
 
-The default `.env.example` points `EMBEDDING_MODEL` to `./models/bge-m3`.
+For local runs, if `QDRANT_URL` is not set, the app uses local Qdrant
+persistence under `QDRANT_PATH`.
 
 ## Configuration
 
@@ -221,7 +226,11 @@ The application reads configuration from `.env`.
 | `LLM_TIMEOUT` | `30` | LLM request timeout in seconds. |
 | `LLM_TRUST_ENV` | `false` | Whether HTTP clients should use proxy variables from the environment. |
 | `LLM_STREAMING` | `true` | Whether normal chat responses should stream. |
-| `MEMORY_DB_PATH` | `./memory.db` | SQLite database path for long-term memories. Docker Compose overrides this to `/app/data/memory.db`. |
+| `QDRANT_PATH` | `./qdrant_data` | Local Qdrant persistence path for non-Docker runs. Ignored when `QDRANT_URL` is set. |
+| `QDRANT_URL` | none | Remote Qdrant service URL. Docker Compose overrides this to `http://qdrant:6333`. |
+| `QDRANT_API_KEY` | none | Remote Qdrant API key. |
+| `QDRANT_COLLECTION` | `agent_memories` | Qdrant collection name for long-term memories. |
+| `QDRANT_PREFER_GRPC` | `false` | Whether the Qdrant client should prefer gRPC. |
 | `EMBEDDING_MODEL` | `./models/bge-m3` | Local or Hugging Face embedding model path. Docker Compose overrides this to `/app/models/bge-m3`. |
 | `EMBEDDING_DEVICE` | `auto` | Embedding device. Use `auto`, `cpu`, `cuda`, or a device id such as `cuda:0`. |
 | `APP_UID` | `1000` | Docker image user id used by Compose build args. |
@@ -245,7 +254,7 @@ The demo runs three turns:
 2. Update it to Rust-first.
 3. Start a new thread and retrieve the remembered preference.
 
-The demo writes to the configured `MEMORY_DB_PATH`.
+The demo writes to the configured Qdrant collection.
 
 ## Run The Chainlit App
 
@@ -273,20 +282,20 @@ The UI provides actions for:
 The repository ignores local runtime artifacts:
 
 - `.env`
-- `*.db`
-- `data/`
+- `qdrant_data/`
 - `models/`
 - `.chainlit/`
 - `chainlit.md`
 - Python cache directories
+- Local ZIP archives
 
-Do not commit API keys, local databases, or downloaded model weights.
+Do not commit API keys, local Qdrant data, or downloaded model weights.
 
 ## Notes
 
-- Memory storage is implemented in `SQLiteVectorMemoryStore`.
-- SQLite and embedding work are executed behind async-friendly background
-  threads so Chainlit is less likely to block on local CPU or disk work.
+- Memory storage is implemented in `QdrantMemoryStore`.
+- Qdrant and embedding work are executed behind async-friendly background
+  threads so Chainlit is less likely to block on local vector work.
 - Memory extraction failures are logged and skipped instead of breaking the
   user-facing chat turn.
 - The LLM client defaults to `LLM_TRUST_ENV=false` to avoid broken system proxy

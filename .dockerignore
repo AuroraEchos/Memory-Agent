@@ -9,8 +9,7 @@
 .venv/
 .vscode/
 __pycache__/
-*.db
 *.py[cod]
 chainlit.md
-data/
+qdrant_data/
 models/

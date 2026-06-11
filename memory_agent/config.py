@@ -74,9 +74,16 @@ class AppSettings:
     llm_timeout: int
     llm_trust_env: bool
     llm_streaming: bool
-    memory_db_path: str
+
+    qdrant_path: str | None
+    qdrant_url: str | None
+    qdrant_api_key: str | None
+    qdrant_collection: str
+    qdrant_prefer_grpc: bool
+
     embedding_model: str
     embedding_device: str
+
     default_user_id: str
     debug: bool
 
@@ -94,10 +101,20 @@ def load_settings() -> AppSettings:
         llm_timeout=env_int("LLM_TIMEOUT", 30),
         llm_trust_env=env_bool("LLM_TRUST_ENV", False),
         llm_streaming=env_bool("LLM_STREAMING", True),
-        memory_db_path=env_str("MEMORY_DB_PATH", "./memory.db") or "./memory.db",
-        embedding_model=env_str("EMBEDDING_MODEL", "./models/bge-m3") or "./models/bge-m3",
+
+        qdrant_path=env_str("QDRANT_PATH", "./qdrant_data"),
+        qdrant_url=env_str("QDRANT_URL"),
+        qdrant_api_key=env_str("QDRANT_API_KEY"),
+        qdrant_collection=env_str("QDRANT_COLLECTION", "agent_memories")
+        or "agent_memories",
+        qdrant_prefer_grpc=env_bool("QDRANT_PREFER_GRPC", False),
+
+        embedding_model=env_str("EMBEDDING_MODEL", "./models/bge-m3")
+        or "./models/bge-m3",
         embedding_device=env_str("EMBEDDING_DEVICE", "auto") or "auto",
-        default_user_id=env_str("DEFAULT_USER_ID", "default_user") or "default_user",
+
+        default_user_id=env_str("DEFAULT_USER_ID", "default_user")
+        or "default_user",
         debug=env_bool("APP_DEBUG", False),
     )
 

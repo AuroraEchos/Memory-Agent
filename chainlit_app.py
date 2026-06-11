@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-from memory_agent import Context, SQLiteVectorMemoryStore, build_graph, load_settings
+from memory_agent import Context, build_graph, create_memory_store, load_settings
 from memory_agent.chainlit_ui import (
     ASSISTANT_AUTHOR,
     answer_text,
@@ -29,11 +29,7 @@ load_dotenv()
 settings = load_settings()
 logger = logging.getLogger(__name__)
 
-store = SQLiteVectorMemoryStore(
-    db_path=settings.memory_db_path,
-    embedding_model=settings.embedding_model,
-    embedding_device=settings.embedding_device,
-)
+store = create_memory_store(settings)
 
 checkpointer = InMemorySaver()
 
@@ -62,6 +58,10 @@ async def _safe_search_memories(
 
 @cl.on_app_shutdown
 async def on_app_shutdown():
+    close_store = getattr(store, "close", None)
+    if close_store is not None:
+        close_store()
+
     await close_llm_clients()
 
 

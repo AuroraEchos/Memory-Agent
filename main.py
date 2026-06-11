@@ -9,7 +9,7 @@ try:
 except ImportError:
     from langgraph.checkpoint.memory import MemorySaver as InMemorySaver
 
-from memory_agent import Context, SQLiteVectorMemoryStore, build_graph, load_settings
+from memory_agent import Context, build_graph, create_memory_store, load_settings
 
 
 async def run_turn(
@@ -69,11 +69,7 @@ async def main() -> None:
 
     settings = load_settings()
 
-    store = SQLiteVectorMemoryStore(
-        db_path=settings.memory_db_path,
-        embedding_model=settings.embedding_model,
-        embedding_device=settings.embedding_device,
-    )
+    store = create_memory_store(settings)
 
     checkpointer = InMemorySaver()
 

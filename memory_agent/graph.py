@@ -83,7 +83,6 @@ async def call_model(state: State, runtime: Runtime[Context]) -> dict:
 
     llm = load_chat_model(runtime.context.model, streaming=True)
 
-    # 注意：主 Agent 不再 bind_tools
     response = await llm.ainvoke(
         [
             {"role": "system", "content": system_message},
