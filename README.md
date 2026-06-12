@@ -9,12 +9,12 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 ## 功能特性
 
 - 使用 LangGraph 编排对话流程，并为每个线程保留短期检查点。
-- 短期线程检查点默认使用进程内存储，重启后会丢失。
+- 短期线程检查点可持久化到 SQLite，支持恢复同一 Chainlit 会话上下文。
 - 长期记忆存储在 Qdrant 中，支持向量检索、远程服务和本地持久化。
 - 支持本地或独立 embedding 服务，Docker 默认将 embedding 推理移出主进程。
 - 支持 OpenAI-compatible 聊天模型配置。
 - 提供支持流式回复的 Chainlit UI。
-- 支持记忆查看、搜索、删除确认和当前上下文展示。
+- 支持 Chainlit 登录、会话历史列表、会话恢复、记忆查看、搜索、删除确认和当前上下文展示。
 - 提供 CLI 演示，覆盖记忆创建、更新与检索流程。
 
 ## 项目结构
@@ -22,6 +22,7 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 ```text
 .
 ├── chainlit_app.py              # Chainlit Web UI 入口
+├── docker-compose.chainlit-db.yml # 可选 Chainlit Postgres 持久化服务
 ├── docker-compose.gpu.yml       # 可选 NVIDIA GPU Compose 覆盖配置
 ├── docker-compose.yml           # Docker Compose 运行配置，包含 Qdrant 和 embedding 服务
 ├── Dockerfile                   # 应用镜像
@@ -59,7 +60,7 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 
 ## 使用 Docker 快速启动
 
-Docker Compose 会同时启动 Memory Agent、embedding 服务和 Qdrant 服务，是推荐的快速启动方式。
+Docker Compose 会同时启动 Memory Agent、embedding 服务、Qdrant 和 Chainlit Postgres，是推荐的快速启动方式。
 
 创建环境变量文件：
 
@@ -73,6 +74,9 @@ cp .env.example .env
 LLM_API_KEY=replace-with-your-api-key
 LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 LLM_MODEL=your-model-name
+CHAINLIT_AUTH_SECRET=replace-with-a-random-secret
+CHAINLIT_AUTH_USERNAME=your-login-name
+CHAINLIT_AUTH_PASSWORD=your-login-password
 ```
 
 Linux 下建议保持 `APP_UID=1000` 与 `APP_GID=1000`（常见默认用户），或者在构建前改为 `id -u` / `id -g` 的输出。容器将以该非 root 用户运行。
@@ -98,7 +102,7 @@ PY
 启动 CPU 版本：
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up --build
 ```
 
 打开：
@@ -110,8 +114,11 @@ http://127.0.0.1:8000
 Docker 配置原则：
 
 - 默认 Compose 文件会启动独立的 `embedding-service` 和 `qdrant` 服务。
+- `docker-compose.chainlit-db.yml` 会启动 `chainlit-postgres`，并覆盖容器内的 `CHAINLIT_DATABASE_URL`。
 - `memory-agent` 通过 `EMBEDDING_SERVICE_URL=http://embedding-service:8001` 请求向量，不在主进程加载 embedding 模型。
 - Qdrant 数据持久化在 Docker named volume `qdrant_storage`。
+- Chainlit 会话列表和聊天历史持久化在 Docker named volume `chainlit_postgres_data`。
+- LangGraph 短期 checkpoint SQLite 持久化在 Docker named volume `checkpoint_data`。
 - 应用通过 `QDRANT_URL=http://qdrant:6333` 访问向量数据库。
 - 默认 Compose 文件安装 CPU 版 PyTorch，确保无 GPU 机器也能稳定运行。
 - 下载的 embedding 模型通过 `./models` 挂载到 `embedding-service`。
@@ -127,7 +134,7 @@ https://docs.docker.com/compose/how-tos/gpu-support/
 启动 GPU 版本：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml -f docker-compose.gpu.yml up --build
 ```
 
 GPU 覆盖配置会让 `embedding-service` 使用 CUDA 12.6 的 PyTorch wheel，并请求 Compose 预留 NVIDIA GPU 设备。推荐保留 `EMBEDDING_DEVICE=auto` 以便可用时自动启用 CUDA，或显式指定：
@@ -148,10 +155,10 @@ GPU_COUNT=1
 docker compose down
 ```
 
-重置 Docker 中的 Qdrant 数据：
+重置 Docker 中的 Qdrant、Chainlit 和 checkpoint 数据：
 
 ```bash
-docker compose down -v
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml down -v
 ```
 
 ## 本地环境安装
@@ -181,6 +188,9 @@ cp .env.example .env
 LLM_API_KEY=replace-with-your-api-key
 LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 LLM_MODEL=your-model-name
+CHAINLIT_AUTH_SECRET=replace-with-a-random-secret
+CHAINLIT_AUTH_USERNAME=your-login-name
+CHAINLIT_AUTH_PASSWORD=your-login-password
 ```
 
 将 embedding 模型下载到默认本地路径：
@@ -245,6 +255,12 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001
 | `EMBEDDING_SERVICE_URL` | none | `EMBEDDING_BACKEND=remote` 时使用的 embedding 服务地址。 |
 | `EMBEDDING_TIMEOUT` | `30` | remote embedding 请求超时时间（秒）。 |
 | `EMBEDDING_TRUST_ENV` | `false` | remote embedding HTTP 客户端是否使用环境代理。 |
+| `CHAINLIT_AUTH_SECRET` | none | Chainlit 登录和会话 cookie 使用的密钥，启用历史列表时必须设置。 |
+| `CHAINLIT_AUTH_USERNAME` | none | Chainlit 密码登录用户名。 |
+| `CHAINLIT_AUTH_PASSWORD` | none | Chainlit 密码登录密码。 |
+| `CHAINLIT_AUTH_USER_ID` | none | 可选；长期记忆命名空间使用的 Chainlit 用户 ID，未设置时使用登录用户名。 |
+| `CHAINLIT_DATABASE_URL` | none | Chainlit 数据层数据库 URL，用于会话列表和聊天历史。Docker Postgres override 会覆盖为容器内服务地址。 |
+| `CHECKPOINT_DB_PATH` | `./data/langgraph_checkpoints.sqlite` | LangGraph 短期会话 checkpoint SQLite 路径。 |
 | `APP_UID` | `1000` | Compose 构建参数使用的 Docker 镜像用户 ID。 |
 | `APP_GID` | `1000` | Compose 构建参数使用的 Docker 镜像组 ID。 |
 | `DEFAULT_USER_ID` | `user_001` | 默认用户命名空间。 |
@@ -269,6 +285,12 @@ python main.py
 
 ## 运行 Chainlit 应用
 
+如果使用 `.env.example` 中的本地 Postgres URL，可以先启动数据库服务：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up -d chainlit-postgres
+```
+
 ```bash
 source .venv/bin/activate
 env -u DEBUG chainlit run chainlit_app.py -w --host 127.0.0.1 --port 8000
@@ -282,10 +304,11 @@ http://127.0.0.1:8000
 
 UI 提供：
 
+- 登录后查看 Chainlit 会话历史列表。
+- 从历史列表恢复会话，并继续使用同一个 LangGraph thread checkpoint。
 - 查看全部长期记忆。
 - 按查询语句搜索记忆。
 - 查看当前用户、线程、模型与近期命中记忆。
-- 开启新短期线程（保留长期记忆）。
 - 对单条记忆进行删除确认。
 
 ## 数据与忽略文件
@@ -293,6 +316,7 @@ UI 提供：
 仓库默认忽略本地运行时产物：
 
 - `.env`
+- `data/`
 - `qdrant_data/`
 - `models/`
 - `.chainlit/`
@@ -307,5 +331,6 @@ UI 提供：
 - 记忆存储由 `QdrantMemoryStore` 实现。
 - `QdrantMemoryStore` 只负责向量数据库读写，embedding 由 `EmbeddingProvider` 提供。
 - Docker 默认使用独立 `embedding-service`，减少 Chainlit 主进程的模型加载和推理压力。
+- Chainlit 会话历史使用 SQLAlchemy data layer；LangGraph 短期上下文使用 `AsyncSqliteSaver`。
 - 记忆提取失败会记录日志并跳过，不会中断用户可见的聊天流程。
 - LLM 客户端默认 `LLM_TRUST_ENV=false`，以避免系统代理配置导致异常。仅在你的 endpoint 确实依赖环境代理时再设为 `true`。

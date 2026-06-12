@@ -12,14 +12,16 @@ each turn.
 ## Features
 
 - LangGraph conversation flow with a per-thread short-term checkpoint.
-- Short-term thread checkpoints are stored in memory by default and are lost on restart.
+- Short-term thread checkpoints can persist to SQLite so resumed Chainlit
+  sessions keep the same graph context.
 - Long-term memories are stored in Qdrant with vector search, remote service,
   and local persistence support.
 - Local or remote embedding provider. Docker moves embedding inference out of
   the main Chainlit process by default.
 - OpenAI-compatible chat model configuration.
 - Chainlit UI with streaming responses.
-- Memory viewing, searching, deletion confirmation, and current-context display.
+- Chainlit login, chat history list, chat resume, memory viewing, searching,
+  deletion confirmation, and current-context display.
 - CLI demo that exercises memory creation, update, and retrieval.
 
 ## Project Layout
@@ -27,6 +29,7 @@ each turn.
 ```text
 .
 ├── chainlit_app.py              # Chainlit web UI entrypoint
+├── docker-compose.chainlit-db.yml # Optional Chainlit Postgres service
 ├── docker-compose.gpu.yml       # Optional NVIDIA GPU Compose override
 ├── docker-compose.yml           # Docker Compose runtime with Qdrant and embedding
 ├── Dockerfile                   # Application image
@@ -65,8 +68,8 @@ The project was developed against the dependency versions pinned in
 
 ## Quick Start With Docker
 
-Docker Compose starts Memory Agent, the embedding service, and Qdrant, and is
-the recommended quick start path.
+Docker Compose starts Memory Agent, the embedding service, Qdrant, and Chainlit
+Postgres, and is the recommended quick start path.
 
 Create your environment file:
 
@@ -80,6 +83,9 @@ Edit `.env` and set at least:
 LLM_API_KEY=replace-with-your-api-key
 LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 LLM_MODEL=your-model-name
+CHAINLIT_AUTH_SECRET=replace-with-a-random-secret
+CHAINLIT_AUTH_USERNAME=your-login-name
+CHAINLIT_AUTH_PASSWORD=your-login-password
 ```
 
 On Linux, keep `APP_UID=1000` and `APP_GID=1000` for the common default user,
@@ -107,7 +113,7 @@ PY
 Start the CPU app:
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up --build
 ```
 
 Open:
@@ -120,10 +126,16 @@ Docker setup notes:
 
 - The default Compose file starts dedicated `embedding-service` and `qdrant`
   services.
+- `docker-compose.chainlit-db.yml` starts `chainlit-postgres` and overrides
+  `CHAINLIT_DATABASE_URL` inside the app container.
 - `memory-agent` requests vectors through
   `EMBEDDING_SERVICE_URL=http://embedding-service:8001` and does not load the
   embedding model in the main process.
 - Qdrant data is persisted in Docker named volume `qdrant_storage`.
+- Chainlit chat history and the chat list are persisted in Docker named volume
+  `chainlit_postgres_data`.
+- LangGraph short-term checkpoint SQLite data is persisted in Docker named
+  volume `checkpoint_data`.
 - The app connects to Qdrant through `QDRANT_URL=http://qdrant:6333`.
 - The default Compose file installs the CPU PyTorch wheel, so machines without
   a GPU can run the app predictably.
@@ -147,7 +159,7 @@ https://docs.docker.com/compose/how-tos/gpu-support/
 Start the GPU app:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml -f docker-compose.gpu.yml up --build
 ```
 
 The GPU override switches `embedding-service` to the CUDA 12.6 PyTorch wheel and
@@ -170,10 +182,10 @@ To stop the app:
 docker compose down
 ```
 
-To reset Docker Qdrant data:
+To reset Docker Qdrant, Chainlit, and checkpoint data:
 
 ```bash
-docker compose down -v
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml down -v
 ```
 
 ## Setup
@@ -203,6 +215,9 @@ Edit `.env` and set at least:
 LLM_API_KEY=replace-with-your-api-key
 LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
 LLM_MODEL=your-model-name
+CHAINLIT_AUTH_SECRET=replace-with-a-random-secret
+CHAINLIT_AUTH_USERNAME=your-login-name
+CHAINLIT_AUTH_PASSWORD=your-login-password
 ```
 
 Download the embedding model into the default local path.
@@ -270,6 +285,12 @@ The application reads configuration from `.env`.
 | `EMBEDDING_SERVICE_URL` | none | Embedding service URL used when `EMBEDDING_BACKEND=remote`. |
 | `EMBEDDING_TIMEOUT` | `30` | Remote embedding request timeout in seconds. |
 | `EMBEDDING_TRUST_ENV` | `false` | Whether the remote embedding HTTP client should use proxy variables from the environment. |
+| `CHAINLIT_AUTH_SECRET` | none | Secret used by Chainlit login/session cookies. Required when chat history is enabled. |
+| `CHAINLIT_AUTH_USERNAME` | none | Chainlit password login username. |
+| `CHAINLIT_AUTH_PASSWORD` | none | Chainlit password login password. |
+| `CHAINLIT_AUTH_USER_ID` | none | Optional Chainlit user id used as the long-term memory namespace. Falls back to the login username. |
+| `CHAINLIT_DATABASE_URL` | none | Chainlit data layer database URL for chat history and the chat list. The Docker Postgres override replaces it with the in-network service URL. |
+| `CHECKPOINT_DB_PATH` | `./data/langgraph_checkpoints.sqlite` | LangGraph short-term checkpoint SQLite path. |
 | `APP_UID` | `1000` | Docker image user id used by Compose build args. |
 | `APP_GID` | `1000` | Docker image group id used by Compose build args. |
 | `DEFAULT_USER_ID` | `user_001` | Default user namespace for memories. |
@@ -295,6 +316,12 @@ The demo writes to the configured Qdrant collection.
 
 ## Run The Chainlit App
 
+If you use the local Postgres URL from `.env.example`, start the database first:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up -d chainlit-postgres
+```
+
 ```bash
 source .venv/bin/activate
 env -u DEBUG chainlit run chainlit_app.py -w --host 127.0.0.1 --port 8000
@@ -308,10 +335,11 @@ http://127.0.0.1:8000
 
 The UI provides actions for:
 
+- Viewing the Chainlit chat history list after login.
+- Resuming a historical chat with the same LangGraph thread checkpoint.
 - Viewing all long-term memories.
 - Searching memories by query.
 - Inspecting the current user, thread, model, and recent memory hits.
-- Starting a new short-term thread while keeping long-term memory.
 - Deleting individual memories after confirmation.
 
 ## Data And Ignored Files
@@ -319,6 +347,7 @@ The UI provides actions for:
 The repository ignores local runtime artifacts:
 
 - `.env`
+- `data/`
 - `qdrant_data/`
 - `models/`
 - `.chainlit/`
@@ -335,6 +364,8 @@ Do not commit API keys, local Qdrant data, or downloaded model weights.
   are supplied by `EmbeddingProvider`.
 - Docker uses the standalone `embedding-service` by default, reducing model
   loading and inference pressure in the Chainlit main process.
+- Chainlit chat history uses the SQLAlchemy data layer; LangGraph short-term
+  context uses `AsyncSqliteSaver`.
 - Memory extraction failures are logged and skipped instead of breaking the
   user-facing chat turn.
 - The LLM client defaults to `LLM_TRUST_ENV=false` to avoid broken system proxy

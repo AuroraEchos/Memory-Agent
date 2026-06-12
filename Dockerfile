@@ -27,7 +27,7 @@ COPY --chown=app:app chainlit_app.py embedding_server.py main.py ./
 RUN pip install --upgrade pip \
     && pip install --index-url "${TORCH_INDEX_URL}" "${TORCH_PACKAGE}" \
     && pip install -e . \
-    && mkdir -p /app/models /app/.files /app/.chainlit \
+    && mkdir -p /app/data /app/models /app/.files /app/.chainlit \
     && chown -R app:app /app /home/app
 
 USER app

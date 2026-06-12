@@ -31,13 +31,6 @@ def message_actions() -> list[cl.Action]:
             tooltip="显示当前线程和最近一次记忆命中",
             icon="activity",
         ),
-        cl.Action(
-            name="new_thread",
-            payload={},
-            label="新线程",
-            tooltip="保留长期记忆，开启新的短期对话上下文",
-            icon="messages-square",
-        ),
     ]
 
 
@@ -53,37 +46,95 @@ def memory_actions(memory_id: str) -> list[cl.Action]:
     ]
 
 
-def init_session(default_user_id: str) -> tuple[str, str]:
-    thread_id = f"chat-{uuid4()}"
-    cl.user_session.set("user_id", default_user_id)
+def get_authenticated_user_id(default_user_id: str) -> str:
+    user = cl.user_session.get("user")
+
+    identifier = getattr(user, "identifier", None)
+    if identifier:
+        return str(identifier)
+
+    return default_user_id
+
+
+def get_current_chainlit_thread_id() -> str:
+    """Return the current Chainlit thread/session id.
+
+    Different Chainlit versions expose this slightly differently.
+    We prefer session.thread_id when available, then user_session["id"],
+    then session.id, then a fallback uuid.
+    """
+
+    session = getattr(cl.context, "session", None)
+
+    thread_id = getattr(session, "thread_id", None)
+    if thread_id:
+        return str(thread_id)
+
+    session_id = cl.user_session.get("id")
+    if session_id:
+        return str(session_id)
+
+    raw_session_id = getattr(session, "id", None)
+    if raw_session_id:
+        return str(raw_session_id)
+
+    return f"chat-{uuid4()}"
+
+
+def init_session(
+    default_user_id: str,
+    *,
+    thread_id: str | None = None,
+) -> tuple[str, str]:
+    user_id = get_authenticated_user_id(default_user_id)
+    thread_id = thread_id or get_current_chainlit_thread_id()
+
+    cl.user_session.set("user_id", user_id)
     cl.user_session.set("thread_id", thread_id)
     cl.user_session.set(LAST_MEMORY_HITS_KEY, [])
-    return default_user_id, thread_id
+
+    return user_id, thread_id
+
+
+def resume_session(
+    default_user_id: str,
+    thread: dict[str, Any],
+) -> tuple[str, str]:
+    user_id = get_authenticated_user_id(default_user_id)
+
+    thread_id = (
+        thread.get("id")
+        or thread.get("thread_id")
+        or get_current_chainlit_thread_id()
+    )
+    thread_id = str(thread_id)
+
+    cl.user_session.set("user_id", user_id)
+    cl.user_session.set("thread_id", thread_id)
+
+    if cl.user_session.get(LAST_MEMORY_HITS_KEY) is None:
+        cl.user_session.set(LAST_MEMORY_HITS_KEY, [])
+
+    return user_id, thread_id
 
 
 def get_session_user_id(default_user_id: str) -> str:
     user_id = cl.user_session.get("user_id")
     if user_id:
-        return user_id
+        return str(user_id)
 
-    cl.user_session.set("user_id", default_user_id)
-    return default_user_id
+    user_id = get_authenticated_user_id(default_user_id)
+    cl.user_session.set("user_id", user_id)
+    return user_id
 
 
 def get_session_thread_id() -> str:
     thread_id = cl.user_session.get("thread_id")
     if thread_id:
-        return thread_id
+        return str(thread_id)
 
-    thread_id = f"chat-{uuid4()}"
+    thread_id = get_current_chainlit_thread_id()
     cl.user_session.set("thread_id", thread_id)
-    return thread_id
-
-
-def reset_session_thread() -> str:
-    thread_id = f"chat-{uuid4()}"
-    cl.user_session.set("thread_id", thread_id)
-    cl.user_session.set(LAST_MEMORY_HITS_KEY, [])
     return thread_id
 
 

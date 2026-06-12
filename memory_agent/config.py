@@ -91,6 +91,14 @@ class AppSettings:
     embedding_timeout: float
     embedding_trust_env: bool
 
+    chainlit_database_url: str | None
+    chainlit_auth_secret: str | None
+    chainlit_auth_username: str | None
+    chainlit_auth_password: str | None
+    chainlit_auth_user_id: str | None
+
+    checkpoint_db_path: str
+
     default_user_id: str
     debug: bool
 
@@ -126,6 +134,18 @@ def load_settings() -> AppSettings:
         embedding_service_url=env_str("EMBEDDING_SERVICE_URL"),
         embedding_timeout=env_float("EMBEDDING_TIMEOUT", 30.0),
         embedding_trust_env=env_bool("EMBEDDING_TRUST_ENV", False),
+
+        chainlit_database_url=env_str("CHAINLIT_DATABASE_URL"),
+        chainlit_auth_secret=env_str("CHAINLIT_AUTH_SECRET"),
+        chainlit_auth_username=env_str("CHAINLIT_AUTH_USERNAME"),
+        chainlit_auth_password=env_str("CHAINLIT_AUTH_PASSWORD"),
+        chainlit_auth_user_id=env_str("CHAINLIT_AUTH_USER_ID"),
+
+        checkpoint_db_path=env_str(
+            "CHECKPOINT_DB_PATH",
+            "./data/langgraph_checkpoints.sqlite",
+        )
+        or "./data/langgraph_checkpoints.sqlite",
 
         default_user_id=env_str("DEFAULT_USER_ID", "default_user")
         or "default_user",

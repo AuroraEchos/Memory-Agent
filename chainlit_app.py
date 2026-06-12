@@ -1,10 +1,13 @@
+import asyncio
 import logging
+from pathlib import Path
+from typing import Any
 
 import chainlit as cl
+from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
-
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from memory_agent import Context, build_graph, create_memory_store, load_settings
 from memory_agent.chainlit_ui import (
@@ -18,7 +21,7 @@ from memory_agent.chainlit_ui import (
     memory_actions,
     message_actions,
     remove_memory_hit,
-    reset_session_thread,
+    resume_session,
     serialize_memory,
     store_last_memory_hits,
 )
@@ -29,14 +32,85 @@ load_dotenv()
 settings = load_settings()
 logger = logging.getLogger(__name__)
 
+
+if not settings.chainlit_database_url:
+    raise RuntimeError(
+        "CHAINLIT_DATABASE_URL is required to enable Chainlit chat history."
+    )
+
+if (
+    not settings.chainlit_auth_secret
+    or not settings.chainlit_auth_username
+    or not settings.chainlit_auth_password
+):
+    raise RuntimeError(
+        "CHAINLIT_AUTH_SECRET, CHAINLIT_AUTH_USERNAME, and "
+        "CHAINLIT_AUTH_PASSWORD are required to enable Chainlit "
+        "authentication and chat history."
+    )
+
+
 store = create_memory_store(settings)
 
-checkpointer = InMemorySaver()
-
-graph = build_graph(
-    store=store,
-    checkpointer=checkpointer,
+chainlit_data_layer = SQLAlchemyDataLayer(
+    conninfo=settings.chainlit_database_url,
+    show_logger=settings.debug,
 )
+
+_graph: Any | None = None
+_checkpointer_cm: Any | None = None
+_checkpointer: Any | None = None
+_graph_lock = asyncio.Lock()
+
+
+@cl.data_layer
+def get_data_layer():
+    return chainlit_data_layer
+
+
+@cl.password_auth_callback
+def auth_callback(username: str, password: str):
+    if (
+        username == settings.chainlit_auth_username
+        and password == settings.chainlit_auth_password
+    ):
+        return cl.User(
+            identifier=settings.chainlit_auth_user_id or username,
+            metadata={
+                "role": "user",
+                "provider": "credentials",
+            },
+        )
+
+    return None
+
+
+async def ensure_graph():
+    global _graph, _checkpointer_cm, _checkpointer
+
+    if _graph is not None:
+        return _graph
+
+    async with _graph_lock:
+        if _graph is not None:
+            return _graph
+
+        checkpoint_path = Path(settings.checkpoint_db_path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        _checkpointer_cm = AsyncSqliteSaver.from_conn_string(
+            str(checkpoint_path)
+        )
+        _checkpointer = await _checkpointer_cm.__aenter__()
+
+        _graph = build_graph(
+            store=store,
+            checkpointer=_checkpointer,
+        )
+
+        logger.info("LangGraph checkpoint DB: %s", checkpoint_path)
+
+        return _graph
 
 
 async def _safe_search_memories(
@@ -58,12 +132,24 @@ async def _safe_search_memories(
 
 @cl.on_app_shutdown
 async def on_app_shutdown():
-    await store.aclose()
-    await close_llm_clients()
+    global _checkpointer_cm, _checkpointer, _graph
+
+    try:
+        if _checkpointer_cm is not None:
+            await _checkpointer_cm.__aexit__(None, None, None)
+    finally:
+        _checkpointer_cm = None
+        _checkpointer = None
+        _graph = None
+
+        await store.aclose()
+        await close_llm_clients()
 
 
 @cl.on_chat_start
 async def on_chat_start():
+    await ensure_graph()
+
     user_id, thread_id = init_session(settings.default_user_id)
 
     await cl.Message(
@@ -79,10 +165,28 @@ async def on_chat_start():
     ).send()
 
 
+@cl.on_chat_resume
+async def on_chat_resume(thread: dict):
+    await ensure_graph()
+
+    user_id, thread_id = resume_session(
+        settings.default_user_id,
+        thread,
+    )
+
+    if settings.debug:
+        print("\n=== Chat Resumed ===")
+        print(f"user_id={user_id}")
+        print(f"thread_id={thread_id}")
+
+
 @cl.on_message
 async def on_message(message: cl.Message):
+    graph = await ensure_graph()
+
     user_id = get_session_user_id(settings.default_user_id)
     thread_id = get_session_thread_id()
+
     memory_hits = await _safe_search_memories(
         user_id=user_id,
         query=message.content,
@@ -146,6 +250,7 @@ async def on_message(message: cl.Message):
             if token:
                 streamed = True
                 await response_msg.stream_token(token)
+
     except Exception:
         logger.exception("Graph execution failed")
         if not streamed:
@@ -329,20 +434,5 @@ async def delete_memory(action: cl.Action):
     await cl.Message(
         author=ASSISTANT_AUTHOR,
         content=f"已删除记忆 `{memory_id}`。",
-        actions=message_actions(),
-    ).send()
-
-
-@cl.action_callback("new_thread")
-async def new_thread(action: cl.Action):
-    thread_id = reset_session_thread()
-
-    await cl.Message(
-        author=ASSISTANT_AUTHOR,
-        content=(
-            "已开启新的对话线程。\n\n"
-            f"- user_id: `{get_session_user_id(settings.default_user_id)}`\n"
-            f"- thread_id: `{thread_id}`"
-        ),
         actions=message_actions(),
     ).send()

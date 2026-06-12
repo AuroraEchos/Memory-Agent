@@ -221,4 +221,5 @@ chainlit.md
 
 models/
 qdrant_data/
+data/
 *.zip

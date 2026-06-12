@@ -23,6 +23,8 @@ services:
       EMBEDDING_TRUST_ENV: ${EMBEDDING_TRUST_ENV:-false}
     ports:
       - "8000:8000"
+    volumes:
+      - checkpoint_data:/app/data
     depends_on:
       qdrant:
         condition: service_started
@@ -66,4 +68,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  checkpoint_data:
   qdrant_storage:
