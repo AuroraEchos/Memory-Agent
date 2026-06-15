@@ -1,5 +1,8 @@
+"""Environment-backed configuration for the Memory Agent application."""
+
 import os
 from dataclasses import dataclass, field, fields
+from urllib.parse import urlsplit, urlunsplit
 from typing import ClassVar
 from typing_extensions import Annotated
 
@@ -7,6 +10,8 @@ from memory_agent.prompts import SYSTEM_PROMPT
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean environment variable with common truthy spellings."""
+
     value = os.getenv(name)
 
     if value is None:
@@ -16,6 +21,8 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def env_int(name: str, default: int) -> int:
+    """Read an integer environment variable and raise on invalid values."""
+
     value = os.getenv(name)
 
     if value is None:
@@ -28,6 +35,8 @@ def env_int(name: str, default: int) -> int:
 
 
 def env_int_any(names: tuple[str, ...], default: int) -> int:
+    """Read the first configured integer from a list of environment names."""
+
     for name in names:
         value = os.getenv(name)
 
@@ -43,6 +52,8 @@ def env_int_any(names: tuple[str, ...], default: int) -> int:
 
 
 def env_float(name: str, default: float) -> float:
+    """Read a float environment variable and raise on invalid values."""
+
     value = os.getenv(name)
 
     if value is None:
@@ -55,6 +66,8 @@ def env_float(name: str, default: float) -> float:
 
 
 def env_str(name: str, default: str | None = None) -> str | None:
+    """Read a stripped string environment variable, treating blanks as absent."""
+
     value = os.getenv(name)
 
     if value is None:
@@ -64,8 +77,55 @@ def env_str(name: str, default: str | None = None) -> str | None:
     return value or default
 
 
+def required_env_str(name: str) -> str:
+    """Read a required string environment variable."""
+
+    value = env_str(name)
+
+    if not value:
+        raise ValueError(
+            f"{name} is required. For host development use "
+            f"{name}=http://localhost:6333; inside Docker Compose use "
+            f"{name}=http://qdrant:6333."
+        )
+
+    return value
+
+
+def to_psycopg_conninfo(database_url: str) -> str:
+    """Convert a SQLAlchemy Postgres URL into a psycopg connection URL."""
+
+    database_url = database_url.strip()
+    parsed = urlsplit(database_url)
+    scheme = parsed.scheme
+
+    if "+" in scheme:
+        scheme = scheme.split("+", 1)[0]
+
+    if scheme == "postgres":
+        scheme = "postgresql"
+
+    if scheme != "postgresql":
+        raise ValueError(
+            "CHAINLIT_DATABASE_URL must use a PostgreSQL URL because "
+            "LangGraph checkpoints are stored in PostgreSQL."
+        )
+
+    return urlunsplit(
+        (
+            scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
 class AppSettings:
+    """Process-wide settings loaded from environment variables."""
+
     llm_model: str
     llm_api_key: str | None
     llm_base_url: str | None
@@ -75,18 +135,12 @@ class AppSettings:
     llm_trust_env: bool
     llm_streaming: bool
 
-    qdrant_path: str | None
-    qdrant_url: str | None
+    qdrant_url: str
     qdrant_api_key: str | None
     qdrant_collection: str
     qdrant_prefer_grpc: bool
 
-    embedding_backend: str
-    embedding_model: str
-    embedding_device: str
     embedding_dimension: int
-    embedding_concurrency: int
-    embedding_batch_size: int
     embedding_service_url: str | None
     embedding_timeout: float
     embedding_trust_env: bool
@@ -97,15 +151,15 @@ class AppSettings:
     chainlit_auth_password: str | None
     chainlit_auth_user_id: str | None
 
-    checkpoint_db_path: str
-
-    default_user_id: str
+    conversation_message_window: int
     debug: bool
 
 
 def load_settings() -> AppSettings:
+    """Build immutable application settings from the current environment."""
+
     return AppSettings(
-        llm_model=env_str("LLM_MODEL", "mimo-v2.5-pro") or "mimo-v2.5-pro",
+        llm_model=env_str("LLM_MODEL"),
         llm_api_key=env_str("LLM_API_KEY"),
         llm_base_url=env_str("LLM_BASE_URL"),
         llm_temperature=env_float("LLM_TEMPERATURE", 0.7),
@@ -117,20 +171,13 @@ def load_settings() -> AppSettings:
         llm_trust_env=env_bool("LLM_TRUST_ENV", False),
         llm_streaming=env_bool("LLM_STREAMING", True),
 
-        qdrant_path=env_str("QDRANT_PATH", "./qdrant_data"),
-        qdrant_url=env_str("QDRANT_URL"),
+        qdrant_url=required_env_str("QDRANT_URL"),
         qdrant_api_key=env_str("QDRANT_API_KEY"),
         qdrant_collection=env_str("QDRANT_COLLECTION", "agent_memories")
         or "agent_memories",
         qdrant_prefer_grpc=env_bool("QDRANT_PREFER_GRPC", False),
 
-        embedding_backend=env_str("EMBEDDING_BACKEND", "local") or "local",
-        embedding_model=env_str("EMBEDDING_MODEL", "./models/bge-m3")
-        or "./models/bge-m3",
-        embedding_device=env_str("EMBEDDING_DEVICE", "auto") or "auto",
         embedding_dimension=env_int("EMBEDDING_DIMENSION", 1024),
-        embedding_concurrency=env_int("EMBEDDING_CONCURRENCY", 1),
-        embedding_batch_size=env_int("EMBEDDING_BATCH_SIZE", 32),
         embedding_service_url=env_str("EMBEDDING_SERVICE_URL"),
         embedding_timeout=env_float("EMBEDDING_TIMEOUT", 30.0),
         embedding_trust_env=env_bool("EMBEDDING_TRUST_ENV", False),
@@ -141,24 +188,16 @@ def load_settings() -> AppSettings:
         chainlit_auth_password=env_str("CHAINLIT_AUTH_PASSWORD"),
         chainlit_auth_user_id=env_str("CHAINLIT_AUTH_USER_ID"),
 
-        checkpoint_db_path=env_str(
-            "CHECKPOINT_DB_PATH",
-            "./data/langgraph_checkpoints.sqlite",
-        )
-        or "./data/langgraph_checkpoints.sqlite",
-
-        default_user_id=env_str("DEFAULT_USER_ID", "default_user")
-        or "default_user",
+        conversation_message_window=env_int("CONVERSATION_MESSAGE_WINDOW", 20),
         debug=env_bool("APP_DEBUG", False),
     )
 
 
 @dataclass(kw_only=True)
 class Context:
-    user_id: str = field(
-        default="default_user",
-        metadata={"env": "DEFAULT_USER_ID"},
-    )
+    """Per-run LangGraph context passed to graph nodes."""
+
+    user_id: str
 
     model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = field(
         default="mimo-v2.5-pro",
@@ -173,9 +212,16 @@ class Context:
         metadata={"env": "APP_DEBUG"},
     )
 
+    message_window: int = field(
+        default=20,
+        metadata={"env": "CONVERSATION_MESSAGE_WINDOW"},
+    )
+
     system_prompt: ClassVar[str] = SYSTEM_PROMPT
 
     def __post_init__(self) -> None:
+        """Apply environment overrides for default context values."""
+
         for f in fields(self):
             if not f.init:
                 continue
@@ -189,5 +235,9 @@ class Context:
                 if env_value is not None:
                     if isinstance(default_value, bool):
                         setattr(self, f.name, env_bool(env_name, default_value))
+                    elif isinstance(default_value, int):
+                        setattr(self, f.name, env_int(env_name, default_value))
+                    elif isinstance(default_value, float):
+                        setattr(self, f.name, env_float(env_name, default_value))
                     else:
                         setattr(self, f.name, env_value)

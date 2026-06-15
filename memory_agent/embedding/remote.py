@@ -1,9 +1,13 @@
+"""HTTP client for the standalone embedding service."""
+
 from typing import Any
 
 import httpx
 
 
 class RemoteEmbeddingProvider:
+    """Asynchronous embedding provider backed by the FastAPI service."""
+
     def __init__(
         self,
         *,
@@ -11,6 +15,8 @@ class RemoteEmbeddingProvider:
         timeout: float = 30.0,
         trust_env: bool = False,
     ) -> None:
+        """Create a reusable HTTP client for embedding service requests."""
+
         self.base_url = base_url.rstrip("/")
         self.client = httpx.AsyncClient(
             timeout=timeout,
@@ -18,10 +24,14 @@ class RemoteEmbeddingProvider:
         )
 
     async def aembed(self, text: str) -> list[float]:
+        """Embed a single text by delegating to the batch endpoint."""
+
         vectors = await self.aembed_batch([text])
         return vectors[0]
 
     async def adimension(self) -> int:
+        """Fetch the embedding vector dimension reported by the service."""
+
         response = await self.client.get(f"{self.base_url}/dimension")
         response.raise_for_status()
 
@@ -34,6 +44,8 @@ class RemoteEmbeddingProvider:
         return dimension
 
     async def aembed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of texts through the service's /embed endpoint."""
+
         if not texts:
             return []
 
@@ -57,6 +69,8 @@ class RemoteEmbeddingProvider:
         embeddings: Any,
         expected_count: int,
     ) -> list[list[float]]:
+        """Validate and coerce embedding service output into float vectors."""
+
         if not isinstance(embeddings, list):
             raise RuntimeError("Embedding service returned invalid response.")
 
@@ -86,4 +100,6 @@ class RemoteEmbeddingProvider:
         return normalized
 
     async def aclose(self) -> None:
+        """Close the underlying asynchronous HTTP client."""
+
         await self.client.aclose()

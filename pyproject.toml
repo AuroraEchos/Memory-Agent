@@ -7,28 +7,30 @@ name = "memory-agent"
 version = "0.1.0"
 description = "A LangGraph + Chainlit memory agent with Qdrant vector memory."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 license = { file = "LICENSE" }
 dependencies = [
-    "chainlit==2.11.1",
-    "httpx==0.28.1",
-    "langchain==1.3.2",
-    "langchain-core==1.4.0",
-    "langchain-openai==1.2.2",
-    "langgraph==1.2.2",
-    "numpy==2.2.6",
-    "pydantic==2.13.4",
-    "python-dotenv==1.2.2",
-    "sentence-transformers==5.5.1",
-    "typing-extensions==4.15.0",
-    "qdrant-client==1.18.0",
-    "fastapi==0.136.1",
-    "uvicorn==0.46.0",
-    "langgraph-checkpoint-sqlite==3.1.0",
-    "aiosqlite==0.22.1",
-    "asyncpg==0.31.0",
-    "SQLAlchemy==2.0.50",
-    "greenlet==3.5.1",
+    "chainlit",
+    "httpx",
+    "langchain",
+    "langchain-core",
+    "langchain-openai",
+    "langgraph",
+    "numpy>=2.3.0",
+    "pydantic",
+    "python-dotenv",
+    "sentence-transformers",
+    "typing-extensions",
+    "qdrant-client>=1.18.0",
+    "fastapi",
+    "uvicorn",
+    "langgraph-checkpoint-postgres",
+    "psycopg[binary]",
+    "psycopg-pool",
+    "orjson",
+    "asyncpg",
+    "SQLAlchemy",
+    "greenlet",
 ]
 
 [tool.hatch.build.targets.wheel]

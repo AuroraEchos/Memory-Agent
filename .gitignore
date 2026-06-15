@@ -218,8 +218,6 @@ __marimo__/
 chainlit.md
 .chainlit/
 .vscode/
-
 models/
 qdrant_data/
-data/
 *.zip

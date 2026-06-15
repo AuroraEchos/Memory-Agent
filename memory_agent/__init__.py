@@ -1,7 +1,8 @@
-from memory_agent.config import AppSettings, Context, load_settings
+"""Public package exports for the Memory Agent application."""
+
+from memory_agent.config import AppSettings, Context, load_settings, to_psycopg_conninfo
 from memory_agent.embedding import (
     EmbeddingProvider,
-    LocalEmbeddingProvider,
     RemoteEmbeddingProvider,
     create_embedding_provider,
 )
@@ -17,7 +18,6 @@ __all__ = [
     "AppSettings",
     "Context",
     "EmbeddingProvider",
-    "LocalEmbeddingProvider",
     "RemoteEmbeddingProvider",
     "MemoryItem",
     "MemoryStore",
@@ -26,4 +26,5 @@ __all__ = [
     "create_embedding_provider",
     "create_memory_store",
     "load_settings",
+    "to_psycopg_conninfo",
 ]

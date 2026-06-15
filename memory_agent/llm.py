@@ -1,3 +1,5 @@
+"""OpenAI-compatible chat model loader with reusable HTTP clients."""
+
 import threading
 
 import httpx
@@ -12,6 +14,8 @@ _HTTP_CLIENT_LOCK = threading.Lock()
 
 
 def _get_http_clients(trust_env: bool) -> tuple[httpx.Client, httpx.AsyncClient]:
+    """Return shared sync and async HTTP clients for one proxy setting."""
+
     with _HTTP_CLIENT_LOCK:
         clients = _HTTP_CLIENTS.get(trust_env)
 
@@ -26,6 +30,8 @@ def _get_http_clients(trust_env: bool) -> tuple[httpx.Client, httpx.AsyncClient]
 
 
 async def close_llm_clients() -> None:
+    """Close all cached HTTP clients used by chat models."""
+
     with _HTTP_CLIENT_LOCK:
         clients = list(_HTTP_CLIENTS.values())
         _HTTP_CLIENTS.clear()
@@ -40,15 +46,8 @@ def load_chat_model(
     *,
     streaming: bool | None = None,
 ) -> BaseChatModel:
-    """
-    Load a chat model based on the provided model name.
+    """Load an OpenAI-compatible LangChain chat model."""
 
-    Args:
-        model_name (str): The name of the chat model to load.
-
-    Returns:
-        BaseChatModel: An instance of the loaded chat model.
-    """
     settings = load_settings()
 
     if not settings.llm_api_key:

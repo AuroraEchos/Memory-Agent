@@ -1,15 +1,21 @@
+"""Abstract memory store contract shared by graph and UI code."""
+
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 
 @dataclass
 class MemoryItem:
+    """Normalized memory item returned by a memory store."""
+
     key: str
     value: dict[str, Any]
     score: float | None = None
 
 
 class MemoryStore(Protocol):
+    """Protocol implemented by asynchronous long-term memory stores."""
+
     async def aput(
         self,
         namespace: tuple[str, ...],
@@ -17,6 +23,8 @@ class MemoryStore(Protocol):
         value: dict[str, Any],
         **kwargs: Any,
     ) -> None:
+        """Create or update one memory item."""
+
         ...
 
     async def aget(
@@ -25,6 +33,8 @@ class MemoryStore(Protocol):
         key: str,
         **kwargs: Any,
     ) -> MemoryItem | None:
+        """Fetch one memory item by namespace and key."""
+
         ...
 
     async def adelete(
@@ -32,6 +42,8 @@ class MemoryStore(Protocol):
         namespace: tuple[str, ...],
         key: str,
     ) -> None:
+        """Delete one memory item by namespace and key."""
+
         ...
 
     async def asearch(
@@ -42,7 +54,11 @@ class MemoryStore(Protocol):
         filter: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> list[MemoryItem]:
+        """Search memory items by query text or list them when query is blank."""
+
         ...
 
     async def aclose(self) -> None:
+        """Release resources held by the store."""
+
         ...

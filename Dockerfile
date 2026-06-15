@@ -12,22 +12,20 @@ RUN apt-get update \
 
 ARG APP_UID=1000
 ARG APP_GID=1000
-ARG TORCH_PACKAGE=torch==2.12.0+cpu
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 RUN groupadd --gid "${APP_GID}" app \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home app
 
 COPY --chown=app:app pyproject.toml README.md LICENSE ./
 COPY --chown=app:app memory_agent ./memory_agent
-COPY --chown=app:app chainlit_app.py embedding_server.py main.py ./
+COPY --chown=app:app chainlit_app.py embedding_server.py ./
 
-# sentence-transformers depends on torch; install the requested wheel first so
-# CPU and GPU images do not accidentally resolve to a different runtime.
+# sentence-transformers depends on torch; install the CPU wheel first so the
+# image always uses the same runtime.
 RUN pip install --upgrade pip \
-    && pip install --index-url "${TORCH_INDEX_URL}" "${TORCH_PACKAGE}" \
+    && pip install --index-url https://download.pytorch.org/whl/cpu torch==2.12.0+cpu \
     && pip install -e . \
-    && mkdir -p /app/data /app/models /app/.files /app/.chainlit \
+    && mkdir -p /app/models /app/.files /app/.chainlit \
     && chown -R app:app /app /home/app
 
 USER app

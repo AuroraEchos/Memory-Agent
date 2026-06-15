@@ -1,5 +1,7 @@
+"""LangGraph workflow nodes for chat response and memory extraction."""
+
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from langgraph.graph import END, StateGraph
@@ -14,23 +16,63 @@ from memory_agent.state import State
 logger = logging.getLogger(__name__)
 
 
-def _message_text(messages: list[Any], n: int = 3) -> str:
+def _content_to_text(content: Any) -> str:
+    """Convert message content variants into plain text for retrieval."""
+
+    if content is None:
+        return ""
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        return "".join(_content_to_text(part) for part in content)
+
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("content") or content)
+
+    return str(content)
+
+
+def _latest_human_text(messages: list[Any], n: int = 2) -> str:
+    """Return the latest non-empty human messages as retrieval query text."""
+
     chunks: list[str] = []
 
-    for msg in messages[-n:]:
-        content = getattr(msg, "content", "")
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) != "human":
+            continue
 
-        if isinstance(content, str):
-            chunks.append(content)
-        elif isinstance(content, list):
-            chunks.append(str(content))
-        else:
-            chunks.append(repr(content))
+        text = _content_to_text(getattr(msg, "content", "")).strip()
+        if text:
+            chunks.append(text)
 
-    return "\n".join(chunks)
+        if len(chunks) >= n:
+            break
+
+    return "\n".join(reversed(chunks))
+
+
+def _recent_messages(messages: list[Any], window: int) -> list[Any]:
+    """Keep only the recent conversation window sent to the chat model."""
+
+    window = max(1, int(window))
+    return messages[-window:]
+
+
+def _serialize_memory_hit(mem: Any) -> dict[str, Any]:
+    """Serialize a memory hit for Chainlit session display."""
+
+    return {
+        "key": str(getattr(mem, "key", "")),
+        "value": getattr(mem, "value", {}) or {},
+        "score": getattr(mem, "score", None),
+    }
 
 
 def _format_memories(memories: list[Any]) -> str:
+    """Format retrieved memories for injection into the system prompt."""
+
     if not memories:
         return "No relevant memories found."
 
@@ -52,17 +94,19 @@ def _format_memories(memories: list[Any]) -> str:
 
 
 async def call_model(state: State, runtime: Runtime[Context]) -> dict:
+    """Retrieve relevant memories, call the chat model, and return hits."""
+
     if runtime.store is None:
         raise RuntimeError("runtime.store is None. Compile the graph with a store.")
 
     user_id = runtime.context.user_id
-    query = _message_text(state.messages, n=3)
+    query = _latest_human_text(state.messages, n=2)
 
     try:
         memories = await runtime.store.asearch(
             ("memories", user_id),
             query=query,
-            limit=10,
+            limit=5,
         )
     except Exception as exc:
         logger.exception("Memory retrieval failed")
@@ -78,22 +122,31 @@ async def call_model(state: State, runtime: Runtime[Context]) -> dict:
 
     system_message = runtime.context.system_prompt.format(
         user_info=_format_memories(memories),
-        time=datetime.now().isoformat(),
+        time=datetime.now(timezone.utc).isoformat(),
     )
 
-    llm = load_chat_model(runtime.context.model, streaming=True)
+    llm = load_chat_model(runtime.context.model)
+    recent_messages = _recent_messages(
+        state.messages,
+        runtime.context.message_window,
+    )
 
     response = await llm.ainvoke(
         [
             {"role": "system", "content": system_message},
-            *state.messages,
+            *recent_messages,
         ]
     )
 
-    return {"messages": [response]}
+    return {
+        "messages": [response],
+        "memory_hits": [_serialize_memory_hit(mem) for mem in memories],
+    }
 
 
 async def extract_memory(state: State, runtime: Runtime[Context]) -> dict:
+    """Extract durable memories after a chat response has been generated."""
+
     if runtime.store is None:
         raise RuntimeError("runtime.store is None. Compile the graph with a store.")
 
@@ -115,6 +168,8 @@ async def extract_memory(state: State, runtime: Runtime[Context]) -> dict:
 
 
 def build_graph(store: Any, checkpointer: Any | None = None):
+    """Compile the Memory Agent LangGraph workflow."""
+
     builder = StateGraph(State, context_schema=Context)
 
     builder.add_node("call_model", call_model)

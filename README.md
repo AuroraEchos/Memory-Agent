@@ -9,32 +9,29 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 ## 功能特性
 
 - 使用 LangGraph 编排对话流程，并为每个线程保留短期检查点。
-- 短期线程检查点可持久化到 SQLite，支持恢复同一 Chainlit 会话上下文。
-- 长期记忆存储在 Qdrant 中，支持向量检索、远程服务和本地持久化。
-- 支持本地或独立 embedding 服务，Docker 默认将 embedding 推理移出主进程。
+- 短期线程检查点持久化到 PostgreSQL，并与 Chainlit UI 历史共用同一个数据库。
+- 长期记忆存储在 Qdrant server 中，支持向量检索和远程服务访问。
+- 仅通过独立 embedding 服务生成向量，避免主进程加载 embedding 模型。
 - 支持 OpenAI-compatible 聊天模型配置。
-- 提供支持流式回复的 Chainlit UI。
+- 提供支持流式和非流式回复的 Chainlit UI。
 - 支持 Chainlit 登录、会话历史列表、会话恢复、记忆查看、搜索、删除确认和当前上下文展示。
-- 提供 CLI 演示，覆盖记忆创建、更新与检索流程。
+- 提供测试覆盖配置加载、embedding provider 工厂和 Qdrant store 基础约束。
 
 ## 项目结构
 
 ```text
 .
 ├── chainlit_app.py              # Chainlit Web UI 入口
-├── docker-compose.chainlit-db.yml # 可选 Chainlit Postgres 持久化服务
-├── docker-compose.gpu.yml       # 可选 NVIDIA GPU Compose 覆盖配置
+├── docker-compose.chainlit-db.yml # 可选 PostgreSQL 持久化服务
 ├── docker-compose.yml           # Docker Compose 运行配置，包含 Qdrant 和 embedding 服务
 ├── Dockerfile                   # 应用镜像
 ├── embedding_server.py          # FastAPI embedding 服务入口
-├── main.py                      # CLI 演示入口
 ├── memory_agent/
 │   ├── chainlit_ui.py           # Chainlit UI / 会话辅助逻辑
 │   ├── config.py                # 基于环境变量的配置
 │   ├── embedding/
 │   │   ├── base.py              # Embedding provider 协议
 │   │   ├── factory.py           # Embedding provider 创建入口
-│   │   ├── local.py             # 本地 sentence-transformers provider
 │   │   └── remote.py            # HTTP embedding 服务 provider
 │   ├── graph.py                 # LangGraph 节点与图构建
 │   ├── llm.py                   # OpenAI-compatible 聊天模型加载
@@ -45,6 +42,8 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 │   │   └── qdrant_store.py      # Qdrant 向量记忆存储
 │   ├── prompts.py               # 提示词模板
 │   └── state.py                 # LangGraph 状态定义
+├── scripts/sql/init_chainlit_schema.sql # Chainlit UI 历史初始化 schema
+├── tests/                       # 单元测试
 ├── pyproject.toml               # Python 依赖元数据
 └── .env.example                 # 安全环境变量模板
 ```
@@ -53,14 +52,15 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 
 - Python 3.12 或更高版本。
 - 一个 OpenAI-compatible chat completion endpoint。
-- Qdrant 服务，或 `qdrant-client` 的本地持久化模式。
+- PostgreSQL 数据库，用于 Chainlit UI 历史和 LangGraph 短期 checkpoint。
+- Qdrant server，可使用 Docker Compose 启动本地服务，或连接远程服务。
 - 足够存放 embedding 模型的磁盘空间。
 
 项目基于 `pyproject.toml` 中固定版本的依赖进行开发与验证。
 
 ## 使用 Docker 快速启动
 
-Docker Compose 会同时启动 Memory Agent、embedding 服务、Qdrant 和 Chainlit Postgres，是推荐的快速启动方式。
+Docker Compose 会同时启动 Memory Agent、embedding 服务、Qdrant 和 PostgreSQL，是推荐的快速启动方式。
 
 创建环境变量文件：
 
@@ -77,6 +77,7 @@ LLM_MODEL=your-model-name
 CHAINLIT_AUTH_SECRET=replace-with-a-random-secret
 CHAINLIT_AUTH_USERNAME=your-login-name
 CHAINLIT_AUTH_PASSWORD=your-login-password
+CHAINLIT_AUTH_USER_ID=wenhao
 ```
 
 Linux 下建议保持 `APP_UID=1000` 与 `APP_GID=1000`（常见默认用户），或者在构建前改为 `id -u` / `id -g` 的输出。容器将以该非 root 用户运行。
@@ -99,7 +100,7 @@ model.save("./models/bge-m3")
 PY
 ```
 
-启动 CPU 版本：
+启动应用：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up --build
@@ -115,39 +116,16 @@ Docker 配置原则：
 
 - 默认 Compose 文件会启动独立的 `embedding-service` 和 `qdrant` 服务。
 - `docker-compose.chainlit-db.yml` 会启动 `chainlit-postgres`，并覆盖容器内的 `CHAINLIT_DATABASE_URL`。
+- `docker-compose.chainlit-db.yml` 会将 `scripts/sql/init_chainlit_schema.sql` 挂载到 Postgres 初始化目录；该脚本负责 Chainlit UI 历史表，只会在新的 `chainlit_postgres_data` volume 首次初始化时自动执行。LangGraph checkpoint 表由应用启动时自动创建或迁移。
 - `memory-agent` 通过 `EMBEDDING_SERVICE_URL=http://embedding-service:8001` 请求向量，不在主进程加载 embedding 模型。
 - Qdrant 数据持久化在 Docker named volume `qdrant_storage`。
-- Chainlit 会话列表和聊天历史持久化在 Docker named volume `chainlit_postgres_data`。
-- LangGraph 短期 checkpoint SQLite 持久化在 Docker named volume `checkpoint_data`。
+- Chainlit 会话列表、聊天历史和 LangGraph 短期 checkpoint 持久化在 Docker named volume `chainlit_postgres_data`。
 - 应用通过 `QDRANT_URL=http://qdrant:6333` 访问向量数据库。
-- 默认 Compose 文件安装 CPU 版 PyTorch，确保无 GPU 机器也能稳定运行。
+- 默认 Compose 文件安装 CPU 版 PyTorch。
 - 下载的 embedding 模型通过 `./models` 挂载到 `embedding-service`。
 - `.env` 在运行时读取，不会复制进镜像。
 
 若需更换 embedding 模型，请将模型保存到 `./models`，同步更新 `docker-compose.yml` 中的 `EMBEDDING_MODEL` 容器路径，并在 `.env` 中更新 `EMBEDDING_DIMENSION`。
-
-### Docker + NVIDIA GPU
-
-GPU 支持是可选项。可加速 `embedding-service` 中的 embedding 推理，但需要 NVIDIA GPU、可用的主机驱动以及 Docker 的 NVIDIA Container Toolkit。Compose 的 GPU 预留格式遵循 Docker 官方指南：
-https://docs.docker.com/compose/how-tos/gpu-support/
-
-启动 GPU 版本：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml -f docker-compose.gpu.yml up --build
-```
-
-GPU 覆盖配置会让 `embedding-service` 使用 CUDA 12.6 的 PyTorch wheel，并请求 Compose 预留 NVIDIA GPU 设备。推荐保留 `EMBEDDING_DEVICE=auto` 以便可用时自动启用 CUDA，或显式指定：
-
-```bash
-EMBEDDING_DEVICE=cuda
-```
-
-可通过以下变量限制 GPU 数量：
-
-```bash
-GPU_COUNT=1
-```
 
 停止应用：
 
@@ -155,11 +133,13 @@ GPU_COUNT=1
 docker compose down
 ```
 
-重置 Docker 中的 Qdrant、Chainlit 和 checkpoint 数据：
+重置 Docker 中的 Qdrant 和 PostgreSQL 数据：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml down -v
 ```
+
+如果你已有旧的 `chainlit_postgres_data` volume，新增的 Chainlit 初始化脚本不会自动补跑；需要手动执行 SQL，或按上面的命令重置 volume。LangGraph checkpoint 表会在应用启动时自动创建或迁移。
 
 ## 本地环境安装
 
@@ -191,6 +171,7 @@ LLM_MODEL=your-model-name
 CHAINLIT_AUTH_SECRET=replace-with-a-random-secret
 CHAINLIT_AUTH_USERNAME=your-login-name
 CHAINLIT_AUTH_PASSWORD=your-login-password
+CHAINLIT_AUTH_USER_ID=wenhao
 ```
 
 将 embedding 模型下载到默认本地路径：
@@ -210,21 +191,25 @@ model.save("./models/bge-m3")
 PY
 ```
 
-本地运行时，如果不设置 `QDRANT_URL`，应用会使用 `QDRANT_PATH` 指向的本地 Qdrant 持久化目录。
+本地运行时也必须连接 Qdrant server；应用不再使用 `QdrantClient(path=...)`
+的 embedded/local mode。可以先用 Docker 启动 Qdrant：
 
-默认本地运行使用 `EMBEDDING_BACKEND=local`，会在当前进程加载 embedding 模型。若希望本地开发也使用服务化 embedding，可以先启动独立服务：
+```bash
+docker compose up -d qdrant
+```
+
+本地 Python 运行时必须设置 `QDRANT_URL=http://127.0.0.1:6333`。Docker
+Compose 运行时会为应用容器设置 `http://qdrant:6333`。如需连接远程 Qdrant
+server，请将 `QDRANT_URL` 改为对应地址。
+
+应用只支持远程 embedding provider。运行 Chainlit 前，需要先启动独立 embedding 服务：
 
 ```bash
 source .venv/bin/activate
 uvicorn embedding_server:app --host 127.0.0.1 --port 8001
 ```
 
-然后在运行 CLI 或 Chainlit 前设置：
-
-```bash
-EMBEDDING_BACKEND=remote
-EMBEDDING_SERVICE_URL=http://127.0.0.1:8001
-```
+`.env.example` 默认使用 `EMBEDDING_SERVICE_URL=http://127.0.0.1:8001`。
 
 ## 配置说明
 
@@ -240,56 +225,60 @@ EMBEDDING_SERVICE_URL=http://127.0.0.1:8001
 | `LLM_MAX_TOKENS` | none | 旧版兼容变量；仅在未设置 `LLM_MAX_COMPLETION_TOKENS` 时作为 fallback。 |
 | `LLM_TIMEOUT` | `30` | LLM 请求超时时间（秒）。 |
 | `LLM_TRUST_ENV` | `false` | HTTP 客户端是否使用环境变量中的代理配置。 |
-| `LLM_STREAMING` | `true` | 普通聊天回复是否启用流式输出。 |
-| `QDRANT_PATH` | `./qdrant_data` | 非 Docker 本地运行时的 Qdrant 持久化目录。设置 `QDRANT_URL` 后不会使用。 |
-| `QDRANT_URL` | none | 远程 Qdrant 服务地址；Docker Compose 会覆盖为 `http://qdrant:6333`。 |
+| `LLM_STREAMING` | `true` | 普通聊天回复是否启用流式输出；关闭时 Chainlit 会使用模型最终输出。 |
+| `QDRANT_URL` | `http://127.0.0.1:6333` | 必填；Qdrant server 地址。本地开发可通过 `docker compose up -d qdrant` 启动，Docker Compose 应用容器会覆盖为 `http://qdrant:6333`。 |
 | `QDRANT_API_KEY` | none | 远程 Qdrant API Key。 |
 | `QDRANT_COLLECTION` | `agent_memories` | 存储长期记忆的 Qdrant collection 名称。 |
 | `QDRANT_PREFER_GRPC` | `false` | Qdrant 客户端是否优先使用 gRPC。 |
-| `EMBEDDING_BACKEND` | `local` | Embedding provider，可选 `local` 或 `remote`。Docker Compose 会覆盖为 `remote`。 |
-| `EMBEDDING_MODEL` | `./models/bge-m3` | 本地或 Hugging Face embedding 模型路径。Docker Compose 会覆盖为 `/app/models/bge-m3`。 |
-| `EMBEDDING_DEVICE` | `auto` | embedding 设备，可用 `auto`、`cpu`、`cuda` 或 `cuda:0` 这类设备 id。 |
-| `EMBEDDING_DIMENSION` | `1024` | 当前 embedding 模型输出向量维度，必须与 Qdrant collection 维度一致。 |
-| `EMBEDDING_CONCURRENCY` | `1` | 本地 provider 或 embedding 服务内部并发推理数量。 |
-| `EMBEDDING_BATCH_SIZE` | `32` | 本地 provider 或 embedding 服务的批量推理大小。 |
-| `EMBEDDING_SERVICE_URL` | none | `EMBEDDING_BACKEND=remote` 时使用的 embedding 服务地址。 |
+| `EMBEDDING_MODEL` | `./models/bge-m3` | embedding 服务加载的模型路径。Docker Compose 会覆盖为 `/app/models/bge-m3`。 |
+| `EMBEDDING_DEVICE` | `cpu` | embedding 服务使用的设备。当前默认并仅支持 CPU；旧配置中的 `auto` 会按 CPU 处理。 |
+| `EMBEDDING_DIMENSION` | `1024` | 当前 embedding 模型输出向量维度，必须与 Qdrant collection 维度一致；启动时会检查已有 collection 的维度。 |
+| `EMBEDDING_CONCURRENCY` | `1` | embedding 服务内部并发推理数量。 |
+| `EMBEDDING_BATCH_SIZE` | `32` | embedding 服务的批量推理大小。 |
+| `EMBEDDING_SERVICE_URL` | `http://127.0.0.1:8001` | 主应用调用的 embedding 服务地址；Docker Compose 应用容器会覆盖为 `http://embedding-service:8001`。 |
 | `EMBEDDING_TIMEOUT` | `30` | remote embedding 请求超时时间（秒）。 |
 | `EMBEDDING_TRUST_ENV` | `false` | remote embedding HTTP 客户端是否使用环境代理。 |
 | `CHAINLIT_AUTH_SECRET` | none | Chainlit 登录和会话 cookie 使用的密钥，启用历史列表时必须设置。 |
 | `CHAINLIT_AUTH_USERNAME` | none | Chainlit 密码登录用户名。 |
 | `CHAINLIT_AUTH_PASSWORD` | none | Chainlit 密码登录密码。 |
-| `CHAINLIT_AUTH_USER_ID` | none | 可选；长期记忆命名空间使用的 Chainlit 用户 ID，未设置时使用登录用户名。 |
-| `CHAINLIT_DATABASE_URL` | none | Chainlit 数据层数据库 URL，用于会话列表和聊天历史。Docker Postgres override 会覆盖为容器内服务地址。 |
-| `CHECKPOINT_DB_PATH` | `./data/langgraph_checkpoints.sqlite` | LangGraph 短期会话 checkpoint SQLite 路径。 |
+| `CHAINLIT_AUTH_USER_ID` | none | 必填；Chainlit authenticated user identifier。长期记忆、历史列表和 LangGraph context 都使用这个身份。 |
+| `CHAINLIT_DATABASE_URL` | none | PostgreSQL 数据库 URL，同时用于 Chainlit 会话列表、聊天历史和 LangGraph 短期 checkpoint。Docker Postgres override 会覆盖为容器内服务地址。 |
+| `LANGGRAPH_STRICT_MSGPACK` | `true` | LangGraph checkpoint 序列化安全开关；建议保持开启。 |
+| `CONVERSATION_MESSAGE_WINDOW` | `20` | 每轮发送给 LLM 的最近对话消息数量，长期记忆仍通过 Qdrant 检索注入。 |
 | `APP_UID` | `1000` | Compose 构建参数使用的 Docker 镜像用户 ID。 |
 | `APP_GID` | `1000` | Compose 构建参数使用的 Docker 镜像组 ID。 |
-| `DEFAULT_USER_ID` | `user_001` | 默认用户命名空间。 |
 | `APP_DEBUG` | `false` | 启用额外后端调试输出。 |
+
+身份来源只有 Chainlit authenticated user。典型配置中可以使用 `CHAINLIT_AUTH_USERNAME=admin` 作为登录账号，同时设置 `CHAINLIT_AUTH_USER_ID=wenhao`；应用内的 Qdrant namespace 为 `memories/wenhao`，Chainlit 历史用户和 LangGraph `Context.user_id` 也都是 `wenhao`。
 
 如果你的 shell 导出 `DEBUG=release`，Chainlit 可能会将其解析为自身布尔调试标记。建议按下文示例使用 `env -u DEBUG` 启动 Chainlit。
 
-## 运行 CLI 演示
+## 运行测试
 
 ```bash
 source .venv/bin/activate
-python main.py
+python -m unittest discover -s tests
 ```
 
-演示会执行三轮：
-
-1. 存储“偏好 Python Agent 编码”的记忆。
-2. 将偏好更新为“Rust 优先”。
-3. 在新线程中读取并验证该长期记忆。
-
-演示数据会写入配置的 Qdrant collection。
+测试覆盖配置加载、PostgreSQL 连接串转换、remote-only embedding provider
+工厂，以及 Qdrant store 的必填 URL 约束。
 
 ## 运行 Chainlit 应用
 
-如果使用 `.env.example` 中的本地 Postgres URL，可以先启动数据库服务：
+如果使用 `.env.example` 中的本地服务地址，可以先启动 Qdrant 和 PostgreSQL：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up -d chainlit-postgres
+docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up -d qdrant chainlit-postgres
 ```
+
+再启动独立 embedding 服务：
+
+```bash
+source .venv/bin/activate
+uvicorn embedding_server:app --host 127.0.0.1 --port 8001
+```
+
+最后启动 Chainlit：
 
 ```bash
 source .venv/bin/activate
@@ -316,21 +305,20 @@ UI 提供：
 仓库默认忽略本地运行时产物：
 
 - `.env`
-- `data/`
-- `qdrant_data/`
+- `qdrant_data/`（旧版本地 Qdrant 数据目录）
 - `models/`
 - `.chainlit/`
 - `chainlit.md`
 - Python 缓存目录
 - 本地压缩包
 
-请勿提交 API Key、本地 Qdrant 数据或下载的模型权重。
+请勿提交 API Key、旧版本地 Qdrant 数据或下载的模型权重。
 
 ## 备注
 
 - 记忆存储由 `QdrantMemoryStore` 实现。
-- `QdrantMemoryStore` 只负责向量数据库读写，embedding 由 `EmbeddingProvider` 提供。
-- Docker 默认使用独立 `embedding-service`，减少 Chainlit 主进程的模型加载和推理压力。
-- Chainlit 会话历史使用 SQLAlchemy data layer；LangGraph 短期上下文使用 `AsyncSqliteSaver`。
+- `QdrantMemoryStore` 只负责向量数据库读写，embedding 由远程 `EmbeddingProvider` 提供。
+- Docker 使用独立 `embedding-service`，减少 Chainlit 主进程的模型加载和推理压力。
+- Chainlit 会话历史使用 SQLAlchemy data layer；LangGraph 短期上下文使用 `AsyncPostgresSaver`，两者共用 `CHAINLIT_DATABASE_URL` 指向的 PostgreSQL。
 - 记忆提取失败会记录日志并跳过，不会中断用户可见的聊天流程。
 - LLM 客户端默认 `LLM_TRUST_ENV=false`，以避免系统代理配置导致异常。仅在你的 endpoint 确实依赖环境代理时再设为 `true`。
