@@ -2,7 +2,11 @@ import unittest
 
 from langchain_core.messages import AIMessage
 
-from memory_agent.chainlit_ui import extract_token_usage, format_token_usage
+from memory_agent.chainlit_ui import (
+    extract_token_usage,
+    format_response_latency,
+    format_token_usage,
+)
 
 
 class TokenUsageDisplayTests(unittest.TestCase):
@@ -98,6 +102,23 @@ class TokenUsageDisplayTests(unittest.TestCase):
     def test_missing_usage_formats_as_empty_string(self) -> None:
         self.assertEqual(format_token_usage({}), "")
         self.assertEqual(extract_token_usage({"messages": []}), {})
+
+    def test_formats_subsecond_response_latency(self) -> None:
+        self.assertEqual(
+            format_response_latency(0.456),
+            "**响应准备耗时**: `456 ms`",
+        )
+
+    def test_formats_multisecond_response_latency(self) -> None:
+        self.assertEqual(
+            format_response_latency(1.234),
+            "**响应准备耗时**: `1.23 s`",
+        )
+
+    def test_invalid_response_latency_formats_as_empty_string(self) -> None:
+        self.assertEqual(format_response_latency(None), "")
+        self.assertEqual(format_response_latency(-1), "")
+        self.assertEqual(format_response_latency(float("nan")), "")
 
 
 if __name__ == "__main__":

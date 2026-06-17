@@ -1,5 +1,6 @@
 """Chainlit UI helpers for sessions, actions, and memory rendering."""
 
+import math
 from typing import Any
 from uuid import uuid4
 
@@ -142,6 +143,28 @@ def format_token_usage(usage: dict[str, int]) -> str:
         return ""
 
     return "**Token 用量**: " + " · ".join(parts)
+
+
+def format_response_latency(seconds: float | None) -> str:
+    """Format first-response latency for display in Chainlit messages."""
+
+    if seconds is None:
+        return ""
+
+    try:
+        elapsed = float(seconds)
+    except (TypeError, ValueError):
+        return ""
+
+    if not math.isfinite(elapsed) or elapsed < 0:
+        return ""
+
+    if elapsed < 1:
+        value = f"{elapsed * 1000:.0f} ms"
+    else:
+        value = f"{elapsed:.2f} s"
+
+    return f"**响应准备耗时**: `{value}`"
 
 
 def message_actions() -> list[cl.Action]:
