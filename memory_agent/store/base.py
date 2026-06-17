@@ -51,7 +51,7 @@ class MemoryStore(Protocol):
         namespace: tuple[str, ...],
         query: str,
         limit: int = 10,
-        filter: dict[str, Any] | None = None,
+        metadata_filter: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> list[MemoryItem]:
         """Search memory items by query text or list them when query is blank."""

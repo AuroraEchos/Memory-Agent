@@ -20,6 +20,12 @@ from qdrant_client.models import (
 
 from memory_agent.embedding.base import EmbeddingProvider
 from memory_agent.store.base import MemoryItem
+from memory_agent.memory_taxonomy import (
+    MEMORY_SCHEMA_VERSION,
+    normalize_category,
+    normalize_memory_type,
+    normalize_str_list,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +38,13 @@ class QdrantMemoryStore:
     Embedding is delegated to EmbeddingProvider.
     """
 
-    _PAYLOAD_INDEX_FIELDS = ("namespace", "category", "memory_key")
+    _PAYLOAD_INDEX_FIELDS = (
+        "namespace",
+        "memory_type",
+        "category",
+        "subject",
+        "memory_key",
+    )
 
     def __init__(
         self,
@@ -252,12 +264,19 @@ class QdrantMemoryStore:
             )
 
         if metadata_filter:
-            category = metadata_filter.get("category")
-            if category:
+            for field_name, value in metadata_filter.items():
+                if value is None or value == "":
+                    continue
+                if isinstance(value, (list, tuple, set, dict)):
+                    logger.warning(
+                        "Skipping unsupported non-scalar Qdrant filter field %r",
+                        field_name,
+                    )
+                    continue
                 conditions.append(
                     FieldCondition(
-                        key="category",
-                        match=MatchValue(value=category),
+                        key=str(field_name),
+                        match=MatchValue(value=value),
                     )
                 )
 
@@ -274,11 +293,27 @@ class QdrantMemoryStore:
 
         self._ensure_open()
 
+        memory_type = normalize_memory_type(value.get("memory_type"))
+        category = normalize_category(value.get("category"), memory_type=memory_type)
         content = str(value.get("content", ""))
         context = str(value.get("context", ""))
-        category = str(value.get("category", "general"))
+        subject = str(value.get("subject", ""))
+        entities = ", ".join(normalize_str_list(value.get("entities")))
+        topics = ", ".join(normalize_str_list(value.get("topics")))
 
-        embedding_text = f"{category}\n{content}\n{context}"
+        embedding_text = "\n".join(
+            part
+            for part in (
+                f"type: {memory_type}",
+                f"category: {category}",
+                f"subject: {subject}",
+                f"entities: {entities}",
+                f"topics: {topics}",
+                content,
+                context,
+            )
+            if part.strip()
+        )
         vector = self._validate_vector(
             await self.embedding_provider.aembed(embedding_text)
         )
@@ -310,10 +345,15 @@ class QdrantMemoryStore:
         old = self._get_sync(namespace, key)
         old_value = old.value if old else {}
 
+        memory_type = normalize_memory_type(value.get("memory_type"))
+        category = normalize_category(value.get("category"), memory_type=memory_type)
         content = str(value.get("content", ""))
         context = str(value.get("context", ""))
-        category = str(value.get("category", "general"))
+        subject = str(value.get("subject", ""))
+        entities = normalize_str_list(value.get("entities"))
+        topics = normalize_str_list(value.get("topics"))
         confidence = self._safe_float(value.get("confidence"), 1.0)
+        source = value.get("source") if isinstance(value.get("source"), dict) else {}
 
         created_at = str(
             old_value.get("created_at")
@@ -323,10 +363,16 @@ class QdrantMemoryStore:
 
         normalized_value = {
             **value,
+            "schema_version": int(value.get("schema_version") or MEMORY_SCHEMA_VERSION),
+            "memory_type": memory_type,
             "content": content,
             "context": context,
             "category": category,
+            "subject": subject,
+            "entities": entities,
+            "topics": topics,
             "confidence": confidence,
+            "source": source,
             "created_at": created_at,
             "updated_at": str(value.get("updated_at") or now),
         }
@@ -334,9 +380,14 @@ class QdrantMemoryStore:
         payload = {
             "namespace": namespace_str,
             "memory_key": key,
+            "schema_version": normalized_value["schema_version"],
+            "memory_type": memory_type,
             "content": content,
             "context": context,
             "category": category,
+            "subject": subject,
+            "entities": entities,
+            "topics": topics,
             "confidence": confidence,
             "created_at": normalized_value["created_at"],
             "updated_at": normalized_value["updated_at"],
@@ -395,10 +446,16 @@ class QdrantMemoryStore:
 
         value = payload.get("value")
         if not isinstance(value, dict):
+            memory_type = normalize_memory_type(payload.get("memory_type"))
             value = {
+                "schema_version": payload.get("schema_version", MEMORY_SCHEMA_VERSION),
+                "memory_type": memory_type,
                 "content": payload.get("content", ""),
                 "context": payload.get("context", ""),
-                "category": payload.get("category", "general"),
+                "category": normalize_category(payload.get("category"), memory_type=memory_type),
+                "subject": payload.get("subject", ""),
+                "entities": normalize_str_list(payload.get("entities")),
+                "topics": normalize_str_list(payload.get("topics")),
                 "confidence": payload.get("confidence", 1.0),
                 "created_at": payload.get("created_at"),
                 "updated_at": payload.get("updated_at"),
@@ -549,10 +606,16 @@ class QdrantMemoryStore:
 
         value = payload.get("value")
         if not isinstance(value, dict):
+            memory_type = normalize_memory_type(payload.get("memory_type"))
             value = {
+                "schema_version": payload.get("schema_version", MEMORY_SCHEMA_VERSION),
+                "memory_type": memory_type,
                 "content": payload.get("content", ""),
                 "context": payload.get("context", ""),
-                "category": payload.get("category", "general"),
+                "category": normalize_category(payload.get("category"), memory_type=memory_type),
+                "subject": payload.get("subject", ""),
+                "entities": normalize_str_list(payload.get("entities")),
+                "topics": normalize_str_list(payload.get("topics")),
                 "confidence": payload.get("confidence", 1.0),
                 "created_at": payload.get("created_at"),
                 "updated_at": payload.get("updated_at"),

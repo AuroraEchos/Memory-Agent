@@ -198,6 +198,7 @@ class Context:
     """Per-run LangGraph context passed to graph nodes."""
 
     user_id: str
+    thread_id: str = ""
 
     model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = field(
         default="mimo-v2.5-pro",
