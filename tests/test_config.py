@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from memory_agent.config import load_settings, to_psycopg_conninfo
+from memory_agent.config import Context, load_settings, to_psycopg_conninfo
 
 
 class PostgresConninfoTests(unittest.TestCase):
@@ -97,6 +97,14 @@ class SettingsTests(unittest.TestCase):
         with patch.dict(os.environ, {"QDRANT_URL": ""}, clear=True):
             with self.assertRaisesRegex(ValueError, "QDRANT_URL is required"):
                 load_settings()
+
+
+class ContextTests(unittest.TestCase):
+    def test_thread_id_is_part_of_runtime_context(self) -> None:
+        context = Context(user_id="wenhao", thread_id="thread-123")
+
+        self.assertEqual(context.user_id, "wenhao")
+        self.assertEqual(context.thread_id, "thread-123")
 
 
 if __name__ == "__main__":

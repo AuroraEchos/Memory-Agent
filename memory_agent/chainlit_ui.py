@@ -38,13 +38,13 @@ def message_actions() -> list[cl.Action]:
     ]
 
 
-def memory_actions(memory_id: str) -> list[cl.Action]:
+def memory_actions(memory_id: str, memory_type: str | None) -> list[cl.Action]:
     """Build action buttons attached to a single memory card."""
 
     return [
         cl.Action(
             name="delete_memory",
-            payload={"memory_id": memory_id},
+            payload={"memory_id": memory_id, "memory_type": memory_type or ""},
             label="删除",
             tooltip="删除这条长期记忆",
             icon="trash-2",
@@ -260,6 +260,21 @@ def event_output_to_text(output: Any) -> str:
     return ""
 
 
+def _format_metadata_list(value: Any) -> str:
+    """Format list-like metadata values for Markdown cards."""
+
+    if not value:
+        return ""
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item) for item in value if str(item).strip())
+
+    return str(value)
+
+
 def format_memory_card(memory: dict[str, Any], index: int | None = None) -> str:
     """Format one memory dictionary as a Markdown card."""
 
@@ -267,14 +282,31 @@ def format_memory_card(memory: dict[str, Any], index: int | None = None) -> str:
     score = memory.get("score")
     title = f"### 记忆 {index}" if index is not None else "### 记忆"
     score_line = f"\n**Score**: `{score:.3f}`" if score is not None else ""
+    memory_type = value.get("memory_type", "unknown")
+    category = value.get("category", "")
+    subject = value.get("subject", "")
+    entities = _format_metadata_list(value.get("entities"))
+    topics = _format_metadata_list(value.get("topics"))
+
+    metadata = (
+        f"**ID**: `{memory['key']}`\n"
+        f"**Type**: `{memory_type}`\n"
+        f"**Category**: `{category}`\n"
+        f"**Confidence**: `{value.get('confidence', 1.0)}`"
+        f"{score_line}\n"
+        f"**Updated**: `{value.get('updated_at', '')}`"
+    )
+
+    if subject:
+        metadata += f"\n**Subject**: `{subject}`"
+    if entities:
+        metadata += f"\n**Entities**: `{entities}`"
+    if topics:
+        metadata += f"\n**Topics**: `{topics}`"
 
     return (
         f"{title}\n"
-        f"**ID**: `{memory['key']}`\n"
-        f"**Category**: `{value.get('category', 'general')}`\n"
-        f"**Confidence**: `{value.get('confidence', 1.0)}`"
-        f"{score_line}\n"
-        f"**Updated**: `{value.get('updated_at', '')}`\n\n"
+        f"{metadata}\n\n"
         f"{value.get('content', '')}\n\n"
         f"> {value.get('context', '') or '无额外上下文'}"
     )

@@ -1,6 +1,9 @@
 """LangGraph workflow nodes for chat response and memory extraction."""
 
+from __future__ import annotations
+
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,6 +13,15 @@ from langgraph.runtime import Runtime
 from memory_agent.config import Context
 from memory_agent.llm import load_chat_model
 from memory_agent.memory_extractor import extract_and_store_memories
+from memory_agent.memory_taxonomy import (
+    MAX_INJECTED_MEMORIES,
+    MEMORY_RETRIEVAL_LIMITS,
+    MEMORY_TYPE_VALUES,
+    memory_namespace,
+    memory_type_rank,
+    normalize_category,
+    normalize_memory_type,
+)
 from memory_agent.state import State
 
 
@@ -60,6 +72,19 @@ def _recent_messages(messages: list[Any], window: int) -> list[Any]:
     return messages[-window:]
 
 
+def _memory_score(mem: Any) -> float:
+    """Return a sortable score for a retrieved memory."""
+
+    score = getattr(mem, "score", None)
+    if score is None:
+        return -1.0
+
+    try:
+        return float(score)
+    except (TypeError, ValueError):
+        return -1.0
+
+
 def _serialize_memory_hit(mem: Any) -> dict[str, Any]:
     """Serialize a memory hit for Chainlit session display."""
 
@@ -70,27 +95,104 @@ def _serialize_memory_hit(mem: Any) -> dict[str, Any]:
     }
 
 
+def _format_list(items: Any) -> str:
+    """Format a small list-like metadata value for prompt injection."""
+
+    if not items:
+        return ""
+
+    if isinstance(items, str):
+        return items
+
+    if isinstance(items, (list, tuple, set)):
+        return ", ".join(str(item) for item in items if str(item).strip())
+
+    return str(items)
+
+
 def _format_memories(memories: list[Any]) -> str:
     """Format retrieved memories for injection into the system prompt."""
 
     if not memories:
         return "No relevant memories found."
 
-    lines: list[str] = []
-
+    grouped: dict[str, list[Any]] = defaultdict(list)
     for mem in memories:
-        value = mem.value
+        value = getattr(mem, "value", {}) or {}
+        memory_type = normalize_memory_type(value.get("memory_type"))
+        grouped[memory_type].append(mem)
 
-        lines.append(
-            "- "
-            f"id={mem.key}; "
-            f"category={value.get('category', 'general')}; "
-            f"confidence={value.get('confidence', 1.0)}; "
-            f"content={value.get('content', '')}; "
-            f"context={value.get('context', '')}"
+    lines: list[str] = ["<memories>"]
+
+    for memory_type in MEMORY_TYPE_VALUES:
+        type_memories = grouped.get(memory_type)
+        if not type_memories:
+            continue
+
+        lines.append(f"[{memory_type}]")
+        for mem in type_memories:
+            value = getattr(mem, "value", {}) or {}
+            category = normalize_category(value.get("category"), memory_type=memory_type)
+            subject = str(value.get("subject", "")).strip()
+            entities = _format_list(value.get("entities"))
+            topics = _format_list(value.get("topics"))
+
+            metadata_parts = [
+                f"id={mem.key}",
+                f"type={memory_type}",
+                f"category={category}",
+                f"confidence={value.get('confidence', 1.0)}",
+            ]
+            if subject:
+                metadata_parts.append(f"subject={subject}")
+            if entities:
+                metadata_parts.append(f"entities={entities}")
+            if topics:
+                metadata_parts.append(f"topics={topics}")
+
+            lines.append(
+                "- "
+                + "; ".join(metadata_parts)
+                + f"; content={value.get('content', '')}; "
+                + f"context={value.get('context', '')}"
+            )
+
+    lines.append("</memories>")
+    return "\n".join(lines)
+
+
+async def _retrieve_relevant_memories(
+    *,
+    store: Any,
+    user_id: str,
+    query: str,
+) -> list[Any]:
+    """Retrieve memories from each taxonomy namespace using fixed budgets."""
+
+    if not query.strip():
+        return []
+
+    memories: list[Any] = []
+
+    for memory_type in MEMORY_TYPE_VALUES:
+        try:
+            memories.extend(
+                await store.asearch(
+                    memory_namespace(user_id, memory_type),
+                    query=query,
+                    limit=MEMORY_RETRIEVAL_LIMITS[memory_type],
+                )
+            )
+        except Exception:
+            logger.exception("Memory retrieval failed for type=%s", memory_type)
+
+    memories.sort(
+        key=lambda mem: (
+            memory_type_rank((getattr(mem, "value", {}) or {}).get("memory_type")),
+            -_memory_score(mem),
         )
-
-    return "<memories>\n" + "\n".join(lines) + "\n</memories>"
+    )
+    return memories[:MAX_INJECTED_MEMORIES]
 
 
 async def call_model(state: State, runtime: Runtime[Context]) -> dict:
@@ -103,10 +205,10 @@ async def call_model(state: State, runtime: Runtime[Context]) -> dict:
     query = _latest_human_text(state.messages, n=2)
 
     try:
-        memories = await runtime.store.asearch(
-            ("memories", user_id),
+        memories = await _retrieve_relevant_memories(
+            store=runtime.store,
+            user_id=user_id,
             query=query,
-            limit=5,
         )
     except Exception as exc:
         logger.exception("Memory retrieval failed")
@@ -156,6 +258,7 @@ async def extract_memory(state: State, runtime: Runtime[Context]) -> dict:
             user_id=runtime.context.user_id,
             store=runtime.store,
             model_name=runtime.context.model,
+            thread_id=getattr(runtime.context, "thread_id", None),
             debug=runtime.context.debug,
         )
     except Exception as exc:

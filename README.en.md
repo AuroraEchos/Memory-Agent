@@ -5,9 +5,9 @@
 Memory Agent is a long-term memory chatbot built with LangGraph, Chainlit,
 Qdrant, and service-ready embedding.
 
-The app stores user memories in Qdrant, retrieves relevant memories with
-semantic search before each response, and extracts durable memory updates after
-each turn.
+The app classifies user memories with a long-term memory taxonomy, stores them
+in Qdrant, retrieves relevant memories with semantic search before each
+response, and extracts durable memory updates after each turn.
 
 ## Features
 
@@ -16,14 +16,17 @@ each turn.
   database with Chainlit UI history.
 - Long-term memories are stored in a Qdrant server with vector search and
   remote-service access.
+- Long-term memories are classified as `persona`, `entity`, `project`, `task`,
+  `episodic`, `procedural`, or `knowledge`, and written to typed namespaces.
 - Embeddings are generated only through the standalone embedding service, so
   the main app process does not load the embedding model.
 - OpenAI-compatible chat model configuration.
 - Chainlit UI with streaming and non-streaming responses.
 - Chainlit login, chat history list, chat resume, memory viewing, searching,
   deletion confirmation, and current-context display.
-- Tests covering configuration loading, the embedding provider factory, and
-  basic Qdrant store constraints.
+- Tests covering configuration loading, the embedding provider factory,
+  long-term memory taxonomy, memory extraction schema, and basic Qdrant store
+  constraints.
 
 ## Project Layout
 
@@ -44,6 +47,7 @@ each turn.
 │   ├── graph.py                 # LangGraph nodes and graph builder
 │   ├── llm.py                   # OpenAI-compatible chat model loader
 │   ├── memory_extractor.py      # Durable memory extraction logic
+│   ├── memory_taxonomy.py       # Long-term memory types, namespaces, and budgets
 │   ├── store/
 │   │   ├── base.py              # Memory store protocol
 │   │   ├── factory.py           # Qdrant store factory
@@ -280,9 +284,10 @@ The application reads configuration from `.env`.
 
 The application has exactly one user identity source: the Chainlit
 authenticated user. A typical setup can use `CHAINLIT_AUTH_USERNAME=admin` for
-login and `CHAINLIT_AUTH_USER_ID=wenhao`; the Qdrant namespace becomes
-`memories/wenhao`, and Chainlit history plus LangGraph `Context.user_id` also
-use `wenhao`.
+login and `CHAINLIT_AUTH_USER_ID=wenhao`; Qdrant namespaces are split by
+memory type, such as `memories/wenhao/persona` and
+`memories/wenhao/project`, and Chainlit history plus LangGraph
+`Context.user_id` also use `wenhao`.
 
 If your shell exports `DEBUG=release`, Chainlit may parse it as its own boolean
 debug flag. Start Chainlit with `env -u DEBUG` as shown below.
@@ -295,7 +300,8 @@ python -m unittest discover -s tests
 ```
 
 The tests cover configuration loading, PostgreSQL connection URL conversion,
-the remote-only embedding provider factory, and the required Qdrant URL
+the remote-only embedding provider factory, long-term memory taxonomy, memory
+extraction schema, cross-namespace retrieval, and the required Qdrant URL
 constraint.
 
 ## Run The Chainlit App
@@ -355,6 +361,9 @@ Do not commit API keys, legacy local Qdrant data, or downloaded model weights.
 - Memory storage is implemented in `QdrantMemoryStore`.
 - `QdrantMemoryStore` only handles vector database reads and writes; embeddings
   are supplied by the remote `EmbeddingProvider`.
+- Long-term memories use the fixed taxonomy in `memory_agent.memory_taxonomy`;
+  each `memory_type` is written to its own Qdrant namespace and retrieved with
+  a fixed per-type budget.
 - Docker uses the standalone `embedding-service`, reducing model loading and
   inference pressure in the Chainlit main process.
 - Chainlit chat history uses the SQLAlchemy data layer; LangGraph short-term

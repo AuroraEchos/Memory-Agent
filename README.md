@@ -4,18 +4,19 @@
 
 Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embedding 的长期记忆聊天代理。
 
-应用会将用户记忆保存到 Qdrant 向量数据库中，在每次回复前通过语义检索召回相关记忆，并在每轮对话后提取可长期保存的记忆更新。
+应用会将用户记忆按长期记忆 taxonomy 分类保存到 Qdrant 向量数据库中，在每次回复前通过语义检索召回相关记忆，并在每轮对话后提取可长期保存的记忆更新。
 
 ## 功能特性
 
 - 使用 LangGraph 编排对话流程，并为每个线程保留短期检查点。
 - 短期线程检查点持久化到 PostgreSQL，并与 Chainlit UI 历史共用同一个数据库。
 - 长期记忆存储在 Qdrant server 中，支持向量检索和远程服务访问。
+- 长期记忆按 `persona`、`entity`、`project`、`task`、`episodic`、`procedural`、`knowledge` 分类，并写入类型化 namespace。
 - 仅通过独立 embedding 服务生成向量，避免主进程加载 embedding 模型。
 - 支持 OpenAI-compatible 聊天模型配置。
 - 提供支持流式和非流式回复的 Chainlit UI。
 - 支持 Chainlit 登录、会话历史列表、会话恢复、记忆查看、搜索、删除确认和当前上下文展示。
-- 提供测试覆盖配置加载、embedding provider 工厂和 Qdrant store 基础约束。
+- 提供测试覆盖配置加载、embedding provider 工厂、长期记忆 taxonomy、记忆提取 schema 和 Qdrant store 基础约束。
 
 ## 项目结构
 
@@ -36,6 +37,7 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 │   ├── graph.py                 # LangGraph 节点与图构建
 │   ├── llm.py                   # OpenAI-compatible 聊天模型加载
 │   ├── memory_extractor.py      # 持久记忆提取逻辑
+│   ├── memory_taxonomy.py       # 长期记忆分类、namespace 与检索预算
 │   ├── store/
 │   │   ├── base.py              # 记忆存储协议
 │   │   ├── factory.py           # Qdrant store 创建入口
@@ -249,7 +251,7 @@ uvicorn embedding_server:app --host 127.0.0.1 --port 8001
 | `APP_GID` | `1000` | Compose 构建参数使用的 Docker 镜像组 ID。 |
 | `APP_DEBUG` | `false` | 启用额外后端调试输出。 |
 
-身份来源只有 Chainlit authenticated user。典型配置中可以使用 `CHAINLIT_AUTH_USERNAME=admin` 作为登录账号，同时设置 `CHAINLIT_AUTH_USER_ID=wenhao`；应用内的 Qdrant namespace 为 `memories/wenhao`，Chainlit 历史用户和 LangGraph `Context.user_id` 也都是 `wenhao`。
+身份来源只有 Chainlit authenticated user。典型配置中可以使用 `CHAINLIT_AUTH_USERNAME=admin` 作为登录账号，同时设置 `CHAINLIT_AUTH_USER_ID=wenhao`；应用内的 Qdrant namespace 按记忆类型拆分，例如 `memories/wenhao/persona` 和 `memories/wenhao/project`，Chainlit 历史用户和 LangGraph `Context.user_id` 也都是 `wenhao`。
 
 如果你的 shell 导出 `DEBUG=release`，Chainlit 可能会将其解析为自身布尔调试标记。建议按下文示例使用 `env -u DEBUG` 启动 Chainlit。
 
@@ -261,7 +263,8 @@ python -m unittest discover -s tests
 ```
 
 测试覆盖配置加载、PostgreSQL 连接串转换、remote-only embedding provider
-工厂，以及 Qdrant store 的必填 URL 约束。
+工厂、长期记忆 taxonomy、记忆提取 schema、跨 namespace 检索，以及 Qdrant
+store 的必填 URL 约束。
 
 ## 运行 Chainlit 应用
 
@@ -318,6 +321,7 @@ UI 提供：
 
 - 记忆存储由 `QdrantMemoryStore` 实现。
 - `QdrantMemoryStore` 只负责向量数据库读写，embedding 由远程 `EmbeddingProvider` 提供。
+- 长期记忆使用 `memory_agent.memory_taxonomy` 中的固定 taxonomy；每种 `memory_type` 写入独立 Qdrant namespace，并在检索时按固定预算召回。
 - Docker 使用独立 `embedding-service`，减少 Chainlit 主进程的模型加载和推理压力。
 - Chainlit 会话历史使用 SQLAlchemy data layer；LangGraph 短期上下文使用 `AsyncPostgresSaver`，两者共用 `CHAINLIT_DATABASE_URL` 指向的 PostgreSQL。
 - 记忆提取失败会记录日志并跳过，不会中断用户可见的聊天流程。

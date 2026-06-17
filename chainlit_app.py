@@ -36,6 +36,11 @@ from memory_agent.chainlit_ui import (
     store_last_memory_hits,
 )
 from memory_agent.llm import close_llm_clients
+from memory_agent.memory_taxonomy import (
+    MEMORY_TYPE_VALUES,
+    memory_namespace,
+    normalize_memory_type,
+)
 
 
 load_dotenv(dotenv_path=".env", override=False)
@@ -202,18 +207,43 @@ async def _safe_search_memories(
     user_id: str,
     query: str = "",
     limit: int = 20,
+    memory_type: str | None = None,
 ):
-    """Search long-term memories while converting failures into empty results."""
+    """Search long-term memories across taxonomy namespaces safely."""
 
-    try:
-        return await store.asearch(
-            ("memories", user_id),
-            query=query,
-            limit=limit,
+    memory_types = (
+        [normalize_memory_type(memory_type)]
+        if memory_type
+        else list(MEMORY_TYPE_VALUES)
+    )
+
+    memories: list[Any] = []
+
+    for current_type in memory_types:
+        try:
+            memories.extend(
+                await store.asearch(
+                    memory_namespace(user_id, current_type),
+                    query=query,
+                    limit=limit,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to search %s memories", current_type)
+
+    if query and query.strip():
+        memories.sort(
+            key=lambda mem: (
+                getattr(mem, "score", None)
+                if getattr(mem, "score", None) is not None
+                else -1.0
+            ),
+            reverse=True,
         )
-    except Exception:
-        logger.exception("Failed to search memories")
-        return []
+    else:
+        memories = _sort_memories_latest_first(memories)
+
+    return memories[:limit]
 
 
 def _memory_updated_at(mem: Any) -> str:
@@ -315,6 +345,7 @@ async def on_message(message: cl.Message):
 
     context = Context(
         user_id=user_id,
+        thread_id=thread_id,
         model=settings.llm_model,
         debug=settings.debug,
         message_window=settings.conversation_message_window,
@@ -458,7 +489,7 @@ async def show_memories(action: cl.Action):
         await cl.Message(
             author=ASSISTANT_AUTHOR,
             content=format_memory_card(memory, index),
-            actions=memory_actions(mem.key),
+            actions=memory_actions(mem.key, memory["value"].get("memory_type")),
         ).send()
 
 
@@ -508,7 +539,7 @@ async def search_memories(action: cl.Action):
         await cl.Message(
             author=ASSISTANT_AUTHOR,
             content=format_memory_card(memory, index),
-            actions=memory_actions(mem.key),
+            actions=memory_actions(mem.key, memory["value"].get("memory_type")),
         ).send()
 
 
@@ -536,7 +567,7 @@ async def show_context(action: cl.Action):
         await cl.Message(
             author=ASSISTANT_AUTHOR,
             content=format_memory_card(memory, index),
-            actions=memory_actions(memory["key"]),
+            actions=memory_actions(memory["key"], memory["value"].get("memory_type")),
         ).send()
 
 
@@ -546,6 +577,7 @@ async def delete_memory(action: cl.Action):
 
     user_id = get_session_user_id()
     memory_id = action.payload.get("memory_id")
+    memory_type = action.payload.get("memory_type")
 
     if not memory_id:
         await cl.Message(
@@ -555,7 +587,16 @@ async def delete_memory(action: cl.Action):
         ).send()
         return
 
-    memory = await store.aget(("memories", user_id), memory_id)
+    if not memory_type:
+        await cl.Message(
+            author=ASSISTANT_AUTHOR,
+            content="没有找到这条记忆所属的 memory_type，无法定位 namespace。",
+            actions=message_actions(),
+        ).send()
+        return
+
+    namespace = memory_namespace(user_id, normalize_memory_type(memory_type))
+    memory = await store.aget(namespace, memory_id)
     if memory is None:
         await cl.Message(
             author=ASSISTANT_AUTHOR,
@@ -573,7 +614,7 @@ async def delete_memory(action: cl.Action):
         actions=[
             cl.Action(
                 name="confirm_delete_memory",
-                payload={"memory_id": memory_id},
+                payload={"memory_id": memory_id, "memory_type": memory_type},
                 label="确认删除",
                 icon="trash-2",
             ),
@@ -595,7 +636,7 @@ async def delete_memory(action: cl.Action):
         ).send()
         return
 
-    await store.adelete(("memories", user_id), memory_id)
+    await store.adelete(namespace, memory_id)
     remove_memory_hit(memory_id)
 
     await cl.Message(

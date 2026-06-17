@@ -1,4 +1,6 @@
-"""Durable memory extraction and safe persistence helpers."""
+"""Durable memory extraction, taxonomy classification, and safe persistence."""
+
+from __future__ import annotations
 
 import logging
 import re
@@ -6,19 +8,25 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from memory_agent.llm import load_chat_model
+from memory_agent.memory_taxonomy import (
+    MEMORY_SCHEMA_VERSION,
+    MEMORY_TYPE_VALUES,
+    MemoryType,
+    memory_namespace,
+    normalize_category,
+    normalize_memory_type,
+    normalize_str_list,
+    taxonomy_prompt,
+)
 from memory_agent.prompts import MEMORY_EXTRACTION_PROMPT
 
 
 logger = logging.getLogger(__name__)
 
 
-# Keep code-level secret filtering here instead of relying only on the
-# extraction prompt. Anything saved to long-term memory can be retrieved later,
-# injected into prompts, and displayed in the UI, so sensitive-looking content
-# must be rejected before and after model extraction.
 _SENSITIVE_TEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?im)^\s*[A-Z0-9_.-]*(?:API[_-]?KEY|SECRET|PASSWORD|PASSWD|"
@@ -36,24 +44,6 @@ _SENSITIVE_TEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
-def _contains_sensitive_text(text: str | None) -> bool:
-    """Return whether text looks like a secret or credential."""
-
-    if not text:
-        return False
-
-    return any(pattern.search(text) for pattern in _SENSITIVE_TEXT_PATTERNS)
-
-
-def _decision_contains_sensitive_text(decision: "MemoryDecision") -> bool:
-    """Return whether an extracted memory decision contains sensitive text."""
-
-    return (
-        _contains_sensitive_text(decision.content)
-        or _contains_sensitive_text(decision.context)
-    )
-
-
 class MemoryDecision(BaseModel):
     """Single create/update/ignore decision from the extraction model."""
 
@@ -64,9 +54,16 @@ class MemoryDecision(BaseModel):
         default=None,
         description="Existing memory id if action is update.",
     )
+    memory_type: MemoryType = Field(
+        default="knowledge",
+        description="Canonical long-term memory taxonomy type.",
+    )
     content: str | None = None
     context: str | None = None
-    category: str = "general"
+    category: str | None = None
+    subject: str = ""
+    entities: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
     confidence: float = 1.0
 
     @model_validator(mode="before")
@@ -82,8 +79,19 @@ class MemoryDecision(BaseModel):
         if "memory_id" not in normalized and "id" in normalized:
             normalized["memory_id"] = normalized["id"]
 
+        if "memory_type" not in normalized:
+            for key in ("type", "kind", "taxonomy", "memory_kind"):
+                if key in normalized:
+                    normalized["memory_type"] = normalized[key]
+                    break
+
+        normalized["memory_type"] = normalize_memory_type(
+            normalized.get("memory_type"),
+            default="knowledge",
+        )
+
         if "content" not in normalized:
-            for key in ("memory", "fact", "preference"):
+            for key in ("memory", "fact", "preference", "summary"):
                 if key in normalized:
                     normalized["content"] = normalized[key]
                     break
@@ -100,20 +108,54 @@ class MemoryDecision(BaseModel):
                 normalized["action"] = "ignore"
 
         action = normalized.get("action")
-
         if isinstance(action, str):
             action = action.strip().lower()
             if action in {"none", "no_action", "no-op", "noop", "skip"}:
                 action = "ignore"
             normalized["action"] = action
 
-        if normalized.get("category") is None:
-            normalized["category"] = "general"
+        memory_type = normalize_memory_type(normalized.get("memory_type"))
+        normalized["category"] = normalize_category(
+            normalized.get("category"),
+            memory_type=memory_type,
+        )
 
         if normalized.get("confidence") is None:
             normalized["confidence"] = 1.0
 
         return normalized
+
+    @field_validator("memory_type", mode="before")
+    @classmethod
+    def validate_memory_type(cls, value: object) -> MemoryType:
+        """Accept known aliases but store only canonical taxonomy values."""
+
+        return normalize_memory_type(value)
+
+    @field_validator("category", mode="after")
+    @classmethod
+    def validate_category(cls, value: str | None, info: Any) -> str:
+        """Ensure category is specific and never the old general bucket."""
+
+        memory_type = normalize_memory_type(info.data.get("memory_type", "knowledge"))
+        category = normalize_category(value, memory_type=memory_type)
+        if category == "general":
+            return normalize_category(None, memory_type=memory_type)
+        return category
+
+    @field_validator("entities", "topics", mode="before")
+    @classmethod
+    def validate_str_list(cls, value: object) -> list[str]:
+        """Normalize entities/topics into short string lists."""
+
+        return normalize_str_list(value)
+
+    @field_validator("confidence", mode="after")
+    @classmethod
+    def clamp_confidence(cls, value: float) -> float:
+        """Keep model confidence in a stable numeric range."""
+
+        return max(0.0, min(float(value), 1.0))
 
 
 class MemoryExtractionResult(BaseModel):
@@ -141,6 +183,7 @@ class MemoryExtractionResult(BaseModel):
                     "decision",
                     "id",
                     "memory_id",
+                    "memory_type",
                     "content",
                     "memory",
                     "fact",
@@ -152,6 +195,27 @@ class MemoryExtractionResult(BaseModel):
         return data
 
 
+def _contains_sensitive_text(text: str | None) -> bool:
+    """Return whether text looks like a secret or credential."""
+
+    if not text:
+        return False
+
+    return any(pattern.search(text) for pattern in _SENSITIVE_TEXT_PATTERNS)
+
+
+def _decision_contains_sensitive_text(decision: MemoryDecision) -> bool:
+    """Return whether an extracted memory decision contains sensitive text."""
+
+    return (
+        _contains_sensitive_text(decision.content)
+        or _contains_sensitive_text(decision.context)
+        or _contains_sensitive_text(decision.subject)
+        or any(_contains_sensitive_text(item) for item in decision.entities)
+        or any(_contains_sensitive_text(item) for item in decision.topics)
+    )
+
+
 def _format_existing_memories(memories: list[Any]) -> str:
     """Format existing memories for the extractor while filtering secrets."""
 
@@ -161,18 +225,25 @@ def _format_existing_memories(memories: list[Any]) -> str:
     lines: list[str] = []
 
     for mem in memories:
-        value = mem.value
+        value = getattr(mem, "value", {}) or {}
         content = str(value.get("content", ""))
         context = str(value.get("context", ""))
+        subject = str(value.get("subject", ""))
+        memory_type = normalize_memory_type(value.get("memory_type"))
+        category = normalize_category(value.get("category"), memory_type=memory_type)
 
-        # Never feed sensitive-looking stored data back into the extractor.
-        # This is a defensive layer for legacy/bad data that may already exist.
-        if _contains_sensitive_text(content) or _contains_sensitive_text(context):
+        if (
+            _contains_sensitive_text(content)
+            or _contains_sensitive_text(context)
+            or _contains_sensitive_text(subject)
+        ):
             continue
 
         lines.append(
             f"- id={mem.key}; "
-            f"category={value.get('category', 'general')}; "
+            f"type={memory_type}; "
+            f"category={category}; "
+            f"subject={subject}; "
             f"content={content}; "
             f"context={context}"
         )
@@ -201,12 +272,50 @@ def _content_to_text(content: Any) -> str:
     return str(content)
 
 
+async def _search_existing_memories(
+    *,
+    store: Any,
+    user_id: str,
+    query: str,
+    per_type_limit: int = 4,
+) -> list[Any]:
+    """Search across taxonomy namespaces for possible updates/duplicates."""
+
+    found: list[Any] = []
+
+    for memory_type in MEMORY_TYPE_VALUES:
+        try:
+            found.extend(
+                await store.asearch(
+                    memory_namespace(user_id, memory_type),
+                    query=query,
+                    limit=per_type_limit,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Failed to search existing %s memories during extraction",
+                memory_type,
+            )
+
+    found.sort(
+        key=lambda mem: (
+            getattr(mem, "score", None)
+            if getattr(mem, "score", None) is not None
+            else -1.0
+        ),
+        reverse=True,
+    )
+    return found[:20]
+
+
 async def extract_and_store_memories(
     *,
     messages: list[Any],
     user_id: str,
     store: Any,
     model_name: str,
+    thread_id: str | None = None,
     debug: bool = False,
 ) -> list[MemoryDecision]:
     """Extract durable memories from the latest user message and store them."""
@@ -233,13 +342,14 @@ async def extract_and_store_memories(
             print("\n=== Memory Extractor skipped sensitive-looking input ===")
         return []
 
-    existing = await store.asearch(
-        ("memories", user_id),
+    existing = await _search_existing_memories(
+        store=store,
+        user_id=user_id,
         query=user_text,
-        limit=10,
     )
 
     prompt = MEMORY_EXTRACTION_PROMPT.format(
+        memory_taxonomy=taxonomy_prompt(),
         existing_memories=_format_existing_memories(existing),
         user_text=user_text,
     )
@@ -313,19 +423,32 @@ async def extract_and_store_memories(
                 print("\n=== Memory Extractor skipped sensitive-looking decision ===")
             continue
 
+        memory_type = normalize_memory_type(decision.memory_type)
+        category = normalize_category(decision.category, memory_type=memory_type)
+
         mem_id = decision.memory_id if decision.action == "update" else None
         mem_id = mem_id or str(uuid.uuid4())
 
+        now = datetime.now(timezone.utc).isoformat()
         value = {
+            "schema_version": MEMORY_SCHEMA_VERSION,
+            "memory_type": memory_type,
             "content": decision.content,
             "context": decision.context or "",
-            "category": decision.category,
-            "confidence": max(0.0, min(float(decision.confidence), 1.0)),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "category": category,
+            "subject": decision.subject.strip(),
+            "entities": decision.entities,
+            "topics": decision.topics,
+            "confidence": decision.confidence,
+            "source": {
+                "type": "conversation",
+                "thread_id": thread_id or "",
+            },
+            "updated_at": now,
         }
 
         await store.aput(
-            ("memories", user_id),
+            memory_namespace(user_id, memory_type),
             key=mem_id,
             value=value,
         )
