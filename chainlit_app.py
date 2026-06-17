@@ -22,7 +22,9 @@ from memory_agent.chainlit_ui import (
     answer_text,
     content_to_text,
     event_output_to_text,
+    extract_token_usage,
     format_memory_card,
+    format_token_usage,
     get_last_memory_hits,
     get_session_thread_id,
     get_session_user_id,
@@ -360,6 +362,25 @@ async def on_message(message: cl.Message):
     streamed = False
     error_after_stream = False
     response_finalized = False
+    token_usage: dict[str, int] = {}
+    token_usage_displayed = False
+
+    async def maybe_append_token_usage() -> None:
+        """Append this turn's token usage to the visible assistant message."""
+
+        nonlocal token_usage_displayed
+
+        usage_line = format_token_usage(token_usage)
+        if not usage_line or token_usage_displayed:
+            return
+
+        response_msg.content = response_msg.content.rstrip()
+        response_msg.content += f"\n\n---\n{usage_line}"
+        token_usage_displayed = True
+
+        if response_finalized:
+            await response_msg.update()
+            await persist_message_step(response_msg)
 
     async def finalize_response(*, fallback_empty: bool = False) -> bool:
         """Send and persist the assistant response exactly once."""
@@ -374,6 +395,7 @@ async def on_message(message: cl.Message):
                 return False
             response_msg.content = "抱歉，这轮对话没有生成有效回复。请稍后重试。"
 
+        await maybe_append_token_usage()
         await response_msg.send()
         await persist_message_step(response_msg)
         response_finalized = True
@@ -423,6 +445,9 @@ async def on_message(message: cl.Message):
 
             if event_type in {"on_chat_model_end", "on_chain_end"}:
                 output = data.get("output")
+                current_token_usage = extract_token_usage(output)
+                if current_token_usage:
+                    token_usage = current_token_usage
 
                 if event_type == "on_chain_end":
                     maybe_store_graph_memory_hits(output)
@@ -430,6 +455,7 @@ async def on_message(message: cl.Message):
                 final_text = event_output_to_text(output)
                 if final_text and not response_msg.content.strip():
                     response_msg.content = final_text
+                await maybe_append_token_usage()
                 await finalize_response()
 
     except Exception:

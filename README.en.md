@@ -60,6 +60,25 @@ response, and extracts durable memory updates after each turn.
 └── .env.example                 # Safe environment template
 ```
 
+## Storage Domains
+
+The project has three logical storage domains:
+
+| Domain | Implementation | Stored Data | Primary Index |
+| --- | --- | --- | --- |
+| UI session storage | Chainlit SQLAlchemy DataLayer, backed by PostgreSQL | Users, thread list, chat message steps, elements, feedback | Chainlit authenticated user and Chainlit thread id |
+| Graph state storage | LangGraph `AsyncPostgresSaver`, backed by PostgreSQL | Per-thread checkpoints, short-term conversation state, graph runtime state | `configurable.thread_id` |
+| Long-term memory storage | `QdrantMemoryStore`, backed by Qdrant server | Cross-thread durable memories, taxonomy metadata, vector index | `user_id` and `memory_type` namespace |
+
+UI session storage and Graph state storage currently share the same PostgreSQL database from `CHAINLIT_DATABASE_URL`, but they have different responsibilities. UI session storage powers the history list and message replay. Graph state storage restores the LangGraph thread execution context. Long-term memory storage lives separately in Qdrant and isolates users plus memory types with the `("memories", user_id, memory_type)` namespace.
+
+Identity and linking rules:
+
+- `CHAINLIT_AUTH_USER_ID` is the only user identity source, and it is used in the Chainlit session, LangGraph `Context.user_id`, and long-term memory namespaces.
+- The Chainlit thread id is passed to LangGraph as `configurable.thread_id`, linking UI sessions to Graph checkpoints.
+- `source.thread_id` in long-term memory payloads records the source thread for traceability, but it is not the primary long-term memory index.
+- Deleting a UI session does not automatically delete Graph checkpoints or long-term memories; deleting a long-term memory does not rewrite historical chat messages.
+
 ## Requirements
 
 - Python 3.12 or newer.
@@ -340,6 +359,7 @@ The UI provides actions for:
 - Viewing all long-term memories.
 - Searching memories by query.
 - Inspecting the current user, thread, model, and recent memory hits.
+- Viewing LLM token usage at the end of each assistant response.
 - Deleting individual memories after confirmation.
 
 ## Data And Ignored Files

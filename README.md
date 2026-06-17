@@ -50,6 +50,25 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 └── .env.example                 # 安全环境变量模板
 ```
 
+## 数据存储架构
+
+项目有三套逻辑存储域：
+
+| 存储域 | 实现 | 存储内容 | 主要索引 |
+| --- | --- | --- | --- |
+| UI 会话存储 | Chainlit SQLAlchemy DataLayer，使用 PostgreSQL | 用户、会话列表、聊天消息 step、元素、反馈 | Chainlit authenticated user 和 Chainlit thread id |
+| Graph 状态存储 | LangGraph `AsyncPostgresSaver`，使用 PostgreSQL | 每个线程的 checkpoint、短期对话状态和图运行状态 | `configurable.thread_id` |
+| 长期记忆存储 | `QdrantMemoryStore`，使用 Qdrant server | 跨线程可复用的长期记忆、taxonomy metadata、向量索引 | `user_id` 和 `memory_type` namespace |
+
+UI 会话存储和 Graph 状态存储目前共用 `CHAINLIT_DATABASE_URL` 指向的同一个 PostgreSQL 数据库，但它们的职责不同：UI 会话存储负责历史列表和消息回放，Graph 状态存储负责恢复 LangGraph 线程执行上下文。长期记忆存储独立放在 Qdrant 中，通过 `("memories", user_id, memory_type)` namespace 隔离用户和记忆类型。
+
+身份和关联规则：
+
+- `CHAINLIT_AUTH_USER_ID` 是唯一用户身份来源，并写入 Chainlit session、LangGraph `Context.user_id` 和长期记忆 namespace。
+- Chainlit thread id 会作为 LangGraph `configurable.thread_id`，用于连接 UI 会话和 Graph checkpoint。
+- 长期记忆 payload 中的 `source.thread_id` 只记录来源线程，便于追踪，不是长期记忆的主索引。
+- 删除 UI 会话不会自动删除 Graph checkpoint 或长期记忆；删除长期记忆也不会改写历史消息。
+
 ## 运行要求
 
 - Python 3.12 或更高版本。
@@ -301,6 +320,7 @@ UI 提供：
 - 查看全部长期记忆。
 - 按查询语句搜索记忆。
 - 查看当前用户、线程、模型与近期命中记忆。
+- 在每轮助手回复末尾查看该轮 LLM token 用量。
 - 对单条记忆进行删除确认。
 
 ## 数据与忽略文件

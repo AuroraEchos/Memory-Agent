@@ -10,6 +10,140 @@ ASSISTANT_AUTHOR = "Memory Agent"
 LAST_MEMORY_HITS_KEY = "last_memory_hits"
 
 
+def _safe_int(value: Any) -> int | None:
+    """Coerce token count values to non-negative integers when possible."""
+
+    if value is None or isinstance(value, bool):
+        return None
+
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    if number < 0:
+        return None
+
+    return number
+
+
+def _normalize_token_usage(value: Any) -> dict[str, int]:
+    """Normalize provider-specific token usage payloads."""
+
+    if not isinstance(value, dict):
+        return {}
+
+    usage = value
+    for nested_key in ("token_usage", "usage", "usage_metadata"):
+        nested = usage.get(nested_key)
+        if isinstance(nested, dict):
+            usage = nested
+            break
+
+    def first_count(*keys: str) -> int | None:
+        for key in keys:
+            if key not in usage:
+                continue
+            count = _safe_int(usage.get(key))
+            if count is not None:
+                return count
+        return None
+
+    input_tokens = first_count("input_tokens", "prompt_tokens", "prompt")
+    output_tokens = first_count("output_tokens", "completion_tokens", "completion")
+    total_tokens = first_count("total_tokens", "total")
+
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+
+    normalized: dict[str, int] = {}
+    if input_tokens is not None:
+        normalized["input_tokens"] = input_tokens
+    if output_tokens is not None:
+        normalized["output_tokens"] = output_tokens
+    if total_tokens is not None:
+        normalized["total_tokens"] = total_tokens
+
+    return normalized
+
+
+def extract_token_usage(output: Any) -> dict[str, int]:
+    """Extract token usage from common LangChain event output shapes."""
+
+    if output is None:
+        return {}
+
+    usage_metadata = getattr(output, "usage_metadata", None)
+    usage = _normalize_token_usage(usage_metadata)
+    if usage:
+        return usage
+
+    response_metadata = getattr(output, "response_metadata", None)
+    usage = _normalize_token_usage(response_metadata)
+    if usage:
+        return usage
+
+    message = getattr(output, "message", None)
+    if message is not None:
+        usage = extract_token_usage(message)
+        if usage:
+            return usage
+
+    generations = getattr(output, "generations", None)
+    if generations:
+        first_generation = generations[0]
+        if isinstance(first_generation, list) and first_generation:
+            first_generation = first_generation[0]
+        usage = extract_token_usage(first_generation)
+        if usage:
+            return usage
+
+    if isinstance(output, dict):
+        for key in ("usage_metadata", "response_metadata", "token_usage", "usage"):
+            usage = _normalize_token_usage(output.get(key))
+            if usage:
+                return usage
+
+        messages = output.get("messages")
+        if isinstance(messages, list) and messages:
+            usage = extract_token_usage(messages[-1])
+            if usage:
+                return usage
+
+        generations = output.get("generations")
+        if isinstance(generations, list) and generations:
+            first_generation = generations[0]
+            if isinstance(first_generation, list) and first_generation:
+                first_generation = first_generation[0]
+            usage = extract_token_usage(first_generation)
+            if usage:
+                return usage
+
+    return {}
+
+
+def format_token_usage(usage: dict[str, int]) -> str:
+    """Format normalized token usage for display in Chainlit messages."""
+
+    parts: list[str] = []
+
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    total_tokens = usage.get("total_tokens")
+
+    if input_tokens is not None:
+        parts.append(f"输入 `{input_tokens:,}`")
+    if output_tokens is not None:
+        parts.append(f"输出 `{output_tokens:,}`")
+    if total_tokens is not None:
+        parts.append(f"总计 `{total_tokens:,}`")
+
+    if not parts:
+        return ""
+
+    return "**Token 用量**: " + " · ".join(parts)
+
+
 def message_actions() -> list[cl.Action]:
     """Build action buttons attached to general assistant messages."""
 
