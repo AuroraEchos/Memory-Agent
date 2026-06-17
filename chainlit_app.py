@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import chainlit as cl
@@ -24,6 +25,7 @@ from memory_agent.chainlit_ui import (
     event_output_to_text,
     extract_token_usage,
     format_memory_card,
+    format_response_latency,
     format_token_usage,
     get_last_memory_hits,
     get_session_thread_id,
@@ -330,6 +332,7 @@ async def on_chat_resume(thread: dict):
 async def on_message(message: cl.Message):
     """Run the LangGraph workflow for one user message and stream the answer."""
 
+    request_started_at = time.perf_counter()
     graph = await ensure_graph()
 
     user_id = get_session_user_id()
@@ -363,20 +366,42 @@ async def on_message(message: cl.Message):
     error_after_stream = False
     response_finalized = False
     token_usage: dict[str, int] = {}
+    first_response_latency: float | None = None
+    metrics_footer_started = False
+    latency_displayed = False
     token_usage_displayed = False
 
-    async def maybe_append_token_usage() -> None:
-        """Append this turn's token usage to the visible assistant message."""
+    def mark_first_response_ready() -> None:
+        """Record when the first answer content is ready to display."""
 
-        nonlocal token_usage_displayed
+        nonlocal first_response_latency
 
+        if first_response_latency is None:
+            first_response_latency = time.perf_counter() - request_started_at
+
+    async def maybe_append_response_metrics() -> None:
+        """Append visible response timing and token usage metrics."""
+
+        nonlocal latency_displayed, metrics_footer_started, token_usage_displayed
+
+        latency_line = format_response_latency(first_response_latency)
         usage_line = format_token_usage(token_usage)
-        if not usage_line or token_usage_displayed:
+
+        lines: list[str] = []
+        if latency_line and not latency_displayed:
+            lines.append(latency_line)
+            latency_displayed = True
+        if usage_line and not token_usage_displayed:
+            lines.append(usage_line)
+            token_usage_displayed = True
+
+        if not lines:
             return
 
         response_msg.content = response_msg.content.rstrip()
-        response_msg.content += f"\n\n---\n{usage_line}"
-        token_usage_displayed = True
+        separator = "\n" if metrics_footer_started else "\n\n---\n"
+        response_msg.content += separator + "\n".join(lines)
+        metrics_footer_started = True
 
         if response_finalized:
             await response_msg.update()
@@ -395,7 +420,7 @@ async def on_message(message: cl.Message):
                 return False
             response_msg.content = "抱歉，这轮对话没有生成有效回复。请稍后重试。"
 
-        await maybe_append_token_usage()
+        await maybe_append_response_metrics()
         await response_msg.send()
         await persist_message_step(response_msg)
         response_finalized = True
@@ -438,6 +463,7 @@ async def on_message(message: cl.Message):
                 token = content_to_text(getattr(chunk, "content", ""))
 
                 if token:
+                    mark_first_response_ready()
                     streamed = True
                     await response_msg.stream_token(token)
 
@@ -454,8 +480,9 @@ async def on_message(message: cl.Message):
 
                 final_text = event_output_to_text(output)
                 if final_text and not response_msg.content.strip():
+                    mark_first_response_ready()
                     response_msg.content = final_text
-                await maybe_append_token_usage()
+                await maybe_append_response_metrics()
                 await finalize_response()
 
     except Exception:
