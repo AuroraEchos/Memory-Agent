@@ -332,7 +332,6 @@ async def on_chat_resume(thread: dict):
 async def on_message(message: cl.Message):
     """Run the LangGraph workflow for one user message and stream the answer."""
 
-    request_started_at = time.perf_counter()
     graph = await ensure_graph()
 
     user_id = get_session_user_id()
@@ -366,18 +365,27 @@ async def on_message(message: cl.Message):
     error_after_stream = False
     response_finalized = False
     token_usage: dict[str, int] = {}
+    llm_started_at: float | None = None
     first_response_latency: float | None = None
     metrics_footer_started = False
     latency_displayed = False
     token_usage_displayed = False
 
+    def mark_llm_started() -> None:
+        """Record when the chat model call starts."""
+
+        nonlocal llm_started_at
+
+        if llm_started_at is None:
+            llm_started_at = time.perf_counter()
+
     def mark_first_response_ready() -> None:
-        """Record when the first answer content is ready to display."""
+        """Record when the first chat model content is ready to display."""
 
         nonlocal first_response_latency
 
-        if first_response_latency is None:
-            first_response_latency = time.perf_counter() - request_started_at
+        if first_response_latency is None and llm_started_at is not None:
+            first_response_latency = time.perf_counter() - llm_started_at
 
     async def maybe_append_response_metrics() -> None:
         """Append visible response timing and token usage metrics."""
@@ -453,6 +461,10 @@ async def on_message(message: cl.Message):
             data = event.get("data", {})
 
             if node_name != "call_model":
+                continue
+
+            if event_type == "on_chat_model_start":
+                mark_llm_started()
                 continue
 
             if event_type == "on_chat_model_stream":

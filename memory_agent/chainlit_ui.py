@@ -146,7 +146,7 @@ def format_token_usage(usage: dict[str, int]) -> str:
 
 
 def format_response_latency(seconds: float | None) -> str:
-    """Format first-response latency for display in Chainlit messages."""
+    """Format LLM first-token latency for display in Chainlit messages."""
 
     if seconds is None:
         return ""
@@ -164,7 +164,7 @@ def format_response_latency(seconds: float | None) -> str:
     else:
         value = f"{elapsed:.2f} s"
 
-    return f"**响应准备耗时**: `{value}`"
+    return f"**LLM 首响耗时**: `{value}`"
 
 
 def message_actions() -> list[cl.Action]:

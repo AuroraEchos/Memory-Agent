@@ -359,7 +359,7 @@ The UI provides actions for:
 - Viewing all long-term memories.
 - Searching memories by query.
 - Inspecting the current user, thread, model, and recent memory hits.
-- Viewing response preparation latency and LLM token usage at the end of each assistant response.
+- Viewing LLM first-token latency and token usage at the end of each assistant response.
 - Deleting individual memories after confirmation.
 
 ## Data And Ignored Files
