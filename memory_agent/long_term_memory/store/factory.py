@@ -1,9 +1,9 @@
 """Factory for the configured long-term memory store."""
 
 from memory_agent.config import AppSettings
-from memory_agent.embedding import create_embedding_provider
-from memory_agent.store.base import MemoryStore
-from memory_agent.store.qdrant_store import QdrantMemoryStore
+from memory_agent.long_term_memory.embedding import create_embedding_provider
+from memory_agent.long_term_memory.store.base import MemoryStore
+from memory_agent.long_term_memory.store.qdrant import QdrantMemoryStore
 
 
 def create_memory_store(settings: AppSettings) -> MemoryStore:

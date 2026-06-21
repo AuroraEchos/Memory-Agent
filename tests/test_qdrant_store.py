@@ -1,6 +1,6 @@
 import unittest
 
-from memory_agent.store.qdrant_store import QdrantMemoryStore
+from memory_agent.long_term_memory.store.qdrant import QdrantMemoryStore
 
 
 class DummyEmbeddingProvider:

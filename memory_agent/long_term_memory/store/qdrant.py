@@ -18,9 +18,9 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from memory_agent.embedding.base import EmbeddingProvider
-from memory_agent.store.base import MemoryItem
-from memory_agent.memory_taxonomy import (
+from memory_agent.long_term_memory.embedding.base import EmbeddingProvider
+from memory_agent.long_term_memory.store.base import MemoryItem
+from memory_agent.long_term_memory.taxonomy import (
     MEMORY_SCHEMA_VERSION,
     normalize_category,
     normalize_memory_type,

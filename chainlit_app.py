@@ -40,7 +40,7 @@ from memory_agent.chainlit_ui import (
     store_last_memory_hits,
 )
 from memory_agent.llm import close_llm_clients
-from memory_agent.memory_taxonomy import (
+from memory_agent.long_term_memory.taxonomy import (
     MEMORY_TYPE_VALUES,
     memory_namespace,
     normalize_memory_type,

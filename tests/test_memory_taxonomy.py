@@ -1,6 +1,6 @@
 import unittest
 
-from memory_agent.memory_taxonomy import (
+from memory_agent.long_term_memory.taxonomy import (
     MEMORY_CATEGORY_HINTS,
     MEMORY_RETRIEVAL_LIMITS,
     MEMORY_TYPE_VALUES,

@@ -1,8 +1,8 @@
 """Factory for constructing the configured embedding provider."""
 
 from memory_agent.config import AppSettings
-from memory_agent.embedding.base import EmbeddingProvider
-from memory_agent.embedding.remote import RemoteEmbeddingProvider
+from memory_agent.long_term_memory.embedding.base import EmbeddingProvider
+from memory_agent.long_term_memory.embedding.remote import RemoteEmbeddingProvider
 
 
 def create_embedding_provider(settings: AppSettings) -> EmbeddingProvider:

@@ -1,13 +1,13 @@
 import asyncio
 import unittest
 
-from memory_agent.graph import _retrieve_relevant_memories
-from memory_agent.memory_taxonomy import (
+from memory_agent.long_term_memory.retrieval import retrieve_relevant_memories
+from memory_agent.long_term_memory.store.base import MemoryItem
+from memory_agent.long_term_memory.taxonomy import (
     MEMORY_RETRIEVAL_LIMITS,
     MEMORY_TYPE_VALUES,
     memory_namespace,
 )
-from memory_agent.store.base import MemoryItem
 
 
 class FakeMemoryStore:
@@ -40,7 +40,7 @@ class MemoryRetrievalTests(unittest.TestCase):
         store = FakeMemoryStore()
 
         memories = asyncio.run(
-            _retrieve_relevant_memories(
+            retrieve_relevant_memories(
                 store=store,
                 user_id="wenhao",
                 query="memory agent",
@@ -67,7 +67,7 @@ class MemoryRetrievalTests(unittest.TestCase):
         store = FakeMemoryStore()
 
         memories = asyncio.run(
-            _retrieve_relevant_memories(
+            retrieve_relevant_memories(
                 store=store,
                 user_id="wenhao",
                 query=" ",

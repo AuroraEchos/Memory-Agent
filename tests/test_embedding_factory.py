@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import patch
 
 from memory_agent.config import load_settings
-from memory_agent.embedding.factory import create_embedding_provider
-from memory_agent.embedding.remote import RemoteEmbeddingProvider
+from memory_agent.long_term_memory.embedding.factory import create_embedding_provider
+from memory_agent.long_term_memory.embedding.remote import RemoteEmbeddingProvider
 
 
 class EmbeddingFactoryTests(unittest.TestCase):

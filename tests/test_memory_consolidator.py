@@ -1,6 +1,6 @@
 import unittest
 
-from memory_agent.memory_extractor import (
+from memory_agent.long_term_memory.consolidator import (
     MemoryDecision,
     MemoryExtractionResult,
     _decision_contains_sensitive_text,

@@ -1,4 +1,4 @@
-"""Durable memory extraction, taxonomy classification, and safe persistence."""
+"""Consolidate durable conversation memories into long-term storage."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from memory_agent.llm import load_chat_model
-from memory_agent.memory_taxonomy import (
+from memory_agent.long_term_memory.prompts import MEMORY_EXTRACTION_PROMPT
+from memory_agent.long_term_memory.taxonomy import (
     MEMORY_SCHEMA_VERSION,
     MEMORY_TYPE_VALUES,
     MemoryType,
@@ -21,7 +22,6 @@ from memory_agent.memory_taxonomy import (
     normalize_str_list,
     taxonomy_prompt,
 )
-from memory_agent.prompts import MEMORY_EXTRACTION_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -309,7 +309,7 @@ async def _search_existing_memories(
     return found[:20]
 
 
-async def extract_and_store_memories(
+async def consolidate_memories(
     *,
     messages: list[Any],
     user_id: str,
@@ -318,7 +318,7 @@ async def extract_and_store_memories(
     thread_id: str | None = None,
     debug: bool = False,
 ) -> list[MemoryDecision]:
-    """Extract durable memories from the latest user message and store them."""
+    """Extract, reconcile, and store durable memories from the latest user message."""
 
     latest_user_message = next(
         (
@@ -336,10 +336,10 @@ async def extract_and_store_memories(
 
     if _contains_sensitive_text(user_text):
         logger.warning(
-            "Skipping memory extraction for sensitive-looking user message"
+            "Skipping memory consolidation for sensitive-looking user message"
         )
         if debug:
-            print("\n=== Memory Extractor skipped sensitive-looking input ===")
+            print("\n=== Memory Consolidator skipped sensitive-looking input ===")
         return []
 
     existing = await _search_existing_memories(
@@ -364,7 +364,7 @@ async def extract_and_store_memories(
         prompt,
         config={
             "callbacks": [],
-            "tags": ["memory_extractor"],
+            "tags": ["memory_consolidator"],
         },
     )
 
@@ -375,7 +375,7 @@ async def extract_and_store_memories(
         if parsing_error is not None:
             logger.warning("Memory extraction parsing failed: %s", parsing_error)
             if debug:
-                print("\n=== Memory Extractor Parse Error ===")
+                print("\n=== Memory Consolidator Parse Error ===")
                 print(parsing_error)
             return []
 
@@ -396,7 +396,7 @@ async def extract_and_store_memories(
                 exc,
             )
             if debug:
-                print("\n=== Memory Extractor Validation Error ===")
+                print("\n=== Memory Consolidator Validation Error ===")
                 print(exc)
             return []
     else:
@@ -417,10 +417,10 @@ async def extract_and_store_memories(
 
         if _decision_contains_sensitive_text(decision):
             logger.warning(
-                "Skipping sensitive-looking memory extraction decision"
+                "Skipping sensitive-looking memory consolidation decision"
             )
             if debug:
-                print("\n=== Memory Extractor skipped sensitive-looking decision ===")
+                print("\n=== Memory Consolidator skipped sensitive-looking decision ===")
             continue
 
         memory_type = normalize_memory_type(decision.memory_type)
@@ -456,7 +456,7 @@ async def extract_and_store_memories(
         saved.append(decision)
 
     if debug:
-        print("\n=== Memory Extractor Decisions ===")
+        print("\n=== Memory Consolidator Decisions ===")
         for item in result.memories:
             print(item.model_dump())
 

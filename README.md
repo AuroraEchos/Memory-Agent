@@ -16,7 +16,7 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 - 支持 OpenAI-compatible 聊天模型配置。
 - 提供支持流式和非流式回复的 Chainlit UI。
 - 支持 Chainlit 登录、会话历史列表、会话恢复、记忆查看、搜索、删除确认和当前上下文展示。
-- 提供测试覆盖配置加载、embedding provider 工厂、长期记忆 taxonomy、记忆提取 schema 和 Qdrant store 基础约束。
+- 提供测试覆盖配置加载、短期上下文、embedding provider 工厂、长期记忆 taxonomy、记忆整合 schema、跨 namespace 召回和 Qdrant store 基础约束。
 
 ## 项目结构
 
@@ -30,25 +30,33 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 ├── memory_agent/
 │   ├── chainlit_ui.py           # Chainlit UI / 会话辅助逻辑
 │   ├── config.py                # 基于环境变量的配置
-│   ├── embedding/
-│   │   ├── base.py              # Embedding provider 协议
-│   │   ├── factory.py           # Embedding provider 创建入口
-│   │   └── remote.py            # HTTP embedding 服务 provider
+│   ├── context_builder.py       # 短期对话上下文构建与裁剪
 │   ├── graph.py                 # LangGraph 节点与图构建
 │   ├── llm.py                   # OpenAI-compatible 聊天模型加载
-│   ├── memory_extractor.py      # 持久记忆提取逻辑
-│   ├── memory_taxonomy.py       # 长期记忆分类、namespace 与检索预算
-│   ├── store/
-│   │   ├── base.py              # 记忆存储协议
-│   │   ├── factory.py           # Qdrant store 创建入口
-│   │   └── qdrant_store.py      # Qdrant 向量记忆存储
-│   ├── prompts.py               # 提示词模板
+│   ├── long_term_memory/        # 长期记忆独立子系统
+│   │   ├── consolidator.py      # 记忆抽取、去重、更新与持久化
+│   │   ├── retrieval.py         # 跨 namespace 召回与提示词格式化
+│   │   ├── taxonomy.py          # 记忆分类、namespace 与召回预算
+│   │   ├── prompts.py           # 长期记忆抽取提示词
+│   │   ├── embedding/
+│   │   │   ├── base.py          # Embedding provider 协议
+│   │   │   ├── factory.py       # Embedding provider 创建入口
+│   │   │   └── remote.py        # HTTP embedding 服务 provider
+│   │   └── store/
+│   │       ├── base.py          # 记忆存储协议
+│   │       ├── factory.py       # Qdrant store 创建入口
+│   │       └── qdrant.py        # Qdrant 向量记忆存储
+│   ├── prompts.py               # 聊天系统提示词
 │   └── state.py                 # LangGraph 状态定义
 ├── scripts/sql/init_chainlit_schema.sql # Chainlit UI 历史初始化 schema
 ├── tests/                       # 单元测试
 ├── pyproject.toml               # Python 依赖元数据
 └── .env.example                 # 安全环境变量模板
 ```
+
+`memory_agent/long_term_memory/` 封装长期记忆的分类、召回、整合写入、
+embedding 客户端和 Qdrant 存储实现。`graph.py` 只负责调用这些公共能力并
+编排对话流程，短期上下文仍由根目录的 `context_builder.py` 独立管理。
 
 ## 数据存储架构
 
@@ -265,7 +273,7 @@ uvicorn embedding_server:app --host 127.0.0.1 --port 8001
 | `CHAINLIT_AUTH_USER_ID` | none | 必填；Chainlit authenticated user identifier。长期记忆、历史列表和 LangGraph context 都使用这个身份。 |
 | `CHAINLIT_DATABASE_URL` | none | PostgreSQL 数据库 URL，同时用于 Chainlit 会话列表、聊天历史和 LangGraph 短期 checkpoint。Docker Postgres override 会覆盖为容器内服务地址。 |
 | `LANGGRAPH_STRICT_MSGPACK` | `true` | LangGraph checkpoint 序列化安全开关；建议保持开启。 |
-| `CONVERSATION_MESSAGE_WINDOW` | `20` | 每轮发送给 LLM 的最近对话消息数量，长期记忆仍通过 Qdrant 检索注入。 |
+| `CONVERSATION_MESSAGE_WINDOW` | `20` | 每轮短期对话上下文的最大消息预算；上下文构建器会优先保留当前用户消息和最近完整对话轮次，长期记忆仍通过 Qdrant 检索注入。 |
 | `APP_UID` | `1000` | Compose 构建参数使用的 Docker 镜像用户 ID。 |
 | `APP_GID` | `1000` | Compose 构建参数使用的 Docker 镜像组 ID。 |
 | `APP_DEBUG` | `false` | 启用额外后端调试输出。 |
@@ -282,8 +290,8 @@ python -m unittest discover -s tests
 ```
 
 测试覆盖配置加载、PostgreSQL 连接串转换、remote-only embedding provider
-工厂、长期记忆 taxonomy、记忆提取 schema、跨 namespace 检索，以及 Qdrant
-store 的必填 URL 约束。
+工厂、短期上下文构建、长期记忆 taxonomy、记忆整合 schema、跨 namespace
+检索，以及 Qdrant store 的必填 URL 约束。
 
 ## 运行 Chainlit 应用
 
@@ -341,8 +349,9 @@ UI 提供：
 
 - 记忆存储由 `QdrantMemoryStore` 实现。
 - `QdrantMemoryStore` 只负责向量数据库读写，embedding 由远程 `EmbeddingProvider` 提供。
-- 长期记忆使用 `memory_agent.memory_taxonomy` 中的固定 taxonomy；每种 `memory_type` 写入独立 Qdrant namespace，并在检索时按固定预算召回。
+- 短期对话上下文由 `context_builder` 构建；它过滤空消息、忽略孤立 assistant 消息，并优先保留当前用户消息和最近完整对话轮次。
+- 长期记忆能力集中在 `memory_agent.long_term_memory` 子系统；固定 taxonomy 位于 `long_term_memory.taxonomy`，每种 `memory_type` 写入独立 Qdrant namespace，并在检索时按固定预算召回。
 - Docker 使用独立 `embedding-service`，减少 Chainlit 主进程的模型加载和推理压力。
 - Chainlit 会话历史使用 SQLAlchemy data layer；LangGraph 短期上下文使用 `AsyncPostgresSaver`，两者共用 `CHAINLIT_DATABASE_URL` 指向的 PostgreSQL。
-- 记忆提取失败会记录日志并跳过，不会中断用户可见的聊天流程。
+- 记忆整合失败会记录日志并跳过，不会中断用户可见的聊天流程。
 - LLM 客户端默认 `LLM_TRUST_ENV=false`，以避免系统代理配置导致异常。仅在你的 endpoint 确实依赖环境代理时再设为 `true`。

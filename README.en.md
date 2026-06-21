@@ -24,9 +24,9 @@ response, and extracts durable memory updates after each turn.
 - Chainlit UI with streaming and non-streaming responses.
 - Chainlit login, chat history list, chat resume, memory viewing, searching,
   deletion confirmation, and current-context display.
-- Tests covering configuration loading, the embedding provider factory,
-  long-term memory taxonomy, memory extraction schema, and basic Qdrant store
-  constraints.
+- Tests covering configuration loading, short-term context building, the
+  embedding provider factory, long-term memory taxonomy, memory consolidation,
+  cross-namespace retrieval, and basic Qdrant store constraints.
 
 ## Project Layout
 
@@ -40,25 +40,34 @@ response, and extracts durable memory updates after each turn.
 ├── memory_agent/
 │   ├── chainlit_ui.py           # Chainlit UI/session helpers
 │   ├── config.py                # Environment-backed settings
-│   ├── embedding/
-│   │   ├── base.py              # Embedding provider protocol
-│   │   ├── factory.py           # Embedding provider factory
-│   │   └── remote.py            # HTTP embedding service provider
+│   ├── context_builder.py       # Short-term conversation context builder
 │   ├── graph.py                 # LangGraph nodes and graph builder
 │   ├── llm.py                   # OpenAI-compatible chat model loader
-│   ├── memory_extractor.py      # Durable memory extraction logic
-│   ├── memory_taxonomy.py       # Long-term memory types, namespaces, and budgets
-│   ├── store/
-│   │   ├── base.py              # Memory store protocol
-│   │   ├── factory.py           # Qdrant store factory
-│   │   └── qdrant_store.py      # Qdrant vector memory store
-│   ├── prompts.py               # Prompt templates
+│   ├── long_term_memory/        # Isolated long-term memory subsystem
+│   │   ├── consolidator.py      # Extraction, reconciliation, and persistence
+│   │   ├── retrieval.py         # Cross-namespace retrieval and prompt formatting
+│   │   ├── taxonomy.py          # Memory types, namespaces, and retrieval budgets
+│   │   ├── prompts.py           # Long-term memory extraction prompt
+│   │   ├── embedding/
+│   │   │   ├── base.py          # Embedding provider protocol
+│   │   │   ├── factory.py       # Embedding provider factory
+│   │   │   └── remote.py        # HTTP embedding service provider
+│   │   └── store/
+│   │       ├── base.py          # Memory store protocol
+│   │       ├── factory.py       # Qdrant store factory
+│   │       └── qdrant.py        # Qdrant vector memory store
+│   ├── prompts.py               # Chat system prompt
 │   └── state.py                 # LangGraph state schema
 ├── scripts/sql/init_chainlit_schema.sql # Chainlit UI history schema
 ├── tests/                       # Unit tests
 ├── pyproject.toml               # Python dependency metadata
 └── .env.example                 # Safe environment template
 ```
+
+`memory_agent/long_term_memory/` encapsulates taxonomy, retrieval, memory
+consolidation, the embedding client, and Qdrant persistence. `graph.py` now
+orchestrates these public capabilities, while short-term conversation context
+remains independently managed by the root-level `context_builder.py`.
 
 ## Storage Domains
 
@@ -296,7 +305,7 @@ The application reads configuration from `.env`.
 | `CHAINLIT_AUTH_USER_ID` | none | Required. Chainlit authenticated user identifier. Long-term memory, chat history, and LangGraph context all use this identity. |
 | `CHAINLIT_DATABASE_URL` | none | PostgreSQL database URL for Chainlit chat history, the chat list, and LangGraph short-term checkpoints. The Docker Postgres override replaces it with the in-network service URL. |
 | `LANGGRAPH_STRICT_MSGPACK` | `true` | LangGraph checkpoint serialization safety switch. Keep it enabled unless you have a compatibility reason to change it. |
-| `CONVERSATION_MESSAGE_WINDOW` | `20` | Number of recent conversation messages sent to the LLM on each turn. Long-term memories are still retrieved from Qdrant and injected separately. |
+| `CONVERSATION_MESSAGE_WINDOW` | `20` | Maximum message budget for short-term conversation context. The context builder prioritizes the current user message and recent complete turns; long-term memories are still retrieved from Qdrant and injected separately. |
 | `APP_UID` | `1000` | Docker image user id used by Compose build args. |
 | `APP_GID` | `1000` | Docker image group id used by Compose build args. |
 | `APP_DEBUG` | `false` | Enables extra backend debug output. |
@@ -319,9 +328,9 @@ python -m unittest discover -s tests
 ```
 
 The tests cover configuration loading, PostgreSQL connection URL conversion,
-the remote-only embedding provider factory, long-term memory taxonomy, memory
-extraction schema, cross-namespace retrieval, and the required Qdrant URL
-constraint.
+the remote-only embedding provider factory, short-term context building,
+long-term memory taxonomy, memory consolidation schema, cross-namespace retrieval,
+and the required Qdrant URL constraint.
 
 ## Run The Chainlit App
 
@@ -381,15 +390,19 @@ Do not commit API keys, legacy local Qdrant data, or downloaded model weights.
 - Memory storage is implemented in `QdrantMemoryStore`.
 - `QdrantMemoryStore` only handles vector database reads and writes; embeddings
   are supplied by the remote `EmbeddingProvider`.
-- Long-term memories use the fixed taxonomy in `memory_agent.memory_taxonomy`;
-  each `memory_type` is written to its own Qdrant namespace and retrieved with
-  a fixed per-type budget.
+- Short-term conversation context is built by `context_builder`; it filters
+  empty messages, ignores orphan assistant messages, and prioritizes the
+  current user message plus recent complete turns.
+- Long-term memory capabilities live under `memory_agent.long_term_memory`;
+  the fixed taxonomy is defined in `long_term_memory.taxonomy`, and each
+  `memory_type` is written to its own Qdrant namespace and retrieved with a
+  fixed per-type budget.
 - Docker uses the standalone `embedding-service`, reducing model loading and
   inference pressure in the Chainlit main process.
 - Chainlit chat history uses the SQLAlchemy data layer; LangGraph short-term
   context uses `AsyncPostgresSaver`. Both use the PostgreSQL database pointed
   to by `CHAINLIT_DATABASE_URL`.
-- Memory extraction failures are logged and skipped instead of breaking the
+- Memory consolidation failures are logged and skipped instead of breaking the
   user-facing chat turn.
 - The LLM client defaults to `LLM_TRUST_ENV=false` to avoid broken system proxy
   settings. Set it to `true` only if your endpoint requires environment proxy
