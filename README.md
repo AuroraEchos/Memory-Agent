@@ -150,11 +150,14 @@ Docker 配置原则：
 - Qdrant 数据持久化在 Docker named volume `qdrant_storage`。
 - Chainlit 会话列表、聊天历史和 LangGraph 短期 checkpoint 持久化在 Docker named volume `chainlit_postgres_data`。
 - 应用通过 `QDRANT_URL=http://qdrant:6333` 访问向量数据库。
-- 默认 Compose 文件安装 CPU 版 PyTorch。
+- 默认 Compose 文件安装 CPU 版 PyTorch，因此容器内的 `auto` 会选择 CPU。
 - 下载的 embedding 模型通过 `./models` 挂载到 `embedding-service`。
 - `.env` 在运行时读取，不会复制进镜像。
 
-若需更换 embedding 模型，请将模型保存到 `./models`，同步更新 `docker-compose.yml` 中的 `EMBEDDING_MODEL` 容器路径，并在 `.env` 中更新 `EMBEDDING_DIMENSION`。
+若需更换 embedding 模型，请将模型保存到 `./models`，同步更新
+`docker-compose.yml` 中的 `EMBEDDING_MODEL` 容器路径，并在 `.env` 中更新
+`EMBEDDING_DIMENSION`。不同模型生成的向量不能混用，即使它们的维度相同；
+切换模型时应使用新的 `QDRANT_COLLECTION`，或迁移并重新生成已有记忆的向量。
 
 停止应用：
 
@@ -240,6 +243,18 @@ uvicorn embedding_server:app --host 127.0.0.1 --port 8001
 
 `.env.example` 默认使用 `EMBEDDING_SERVICE_URL=http://127.0.0.1:8001`。
 
+embedding 服务提供 `/health`、`/dimension` 和 `/embed` 接口。健康检查会返回
+已加载模型、设备和缓存后的向量维度；`/embed` 每次接受 1–256 条非空文本，
+单条文本最多 32768 个字符。服务和远程客户端都会校验向量数量、维度和数值
+合法性，并在同一个客户端生命周期内拒绝模型或维度发生变化。
+
+`EMBEDDING_DEVICE=auto` 会依次检测 CUDA、Intel XPU、Apple MPS，最后回退到
+CPU。也可以显式设置 `cpu`、`gpu`、`cuda`、`cuda:0`、`xpu`、`xpu:0` 或
+`mps`；显式请求不可用的设备时服务会在启动阶段报错，不会静默改用 CPU。
+GPU/XPU/MPS 是否可用取决于当前 PyTorch 构建和系统驱动。默认 Docker 镜像安装
+CPU 版 PyTorch；如需在容器中使用 GPU，还需要安装与目标平台匹配的 PyTorch
+构建，并向容器暴露对应设备。
+
 ## 配置说明
 
 应用通过 `.env` 读取配置。
@@ -260,7 +275,7 @@ uvicorn embedding_server:app --host 127.0.0.1 --port 8001
 | `QDRANT_COLLECTION` | `agent_memories` | 存储长期记忆的 Qdrant collection 名称。 |
 | `QDRANT_PREFER_GRPC` | `false` | Qdrant 客户端是否优先使用 gRPC。 |
 | `EMBEDDING_MODEL` | `./models/bge-m3` | embedding 服务加载的模型路径。Docker Compose 会覆盖为 `/app/models/bge-m3`。 |
-| `EMBEDDING_DEVICE` | `cpu` | embedding 服务使用的设备。当前默认并仅支持 CPU；旧配置中的 `auto` 会按 CPU 处理。 |
+| `EMBEDDING_DEVICE` | `auto` | embedding 推理设备。`auto` 按 CUDA、Intel XPU、Apple MPS、CPU 的顺序选择；也可显式指定 `cpu`、`gpu`、`cuda[:N]`、`xpu[:N]` 或 `mps`。 |
 | `EMBEDDING_DIMENSION` | `1024` | 当前 embedding 模型输出向量维度，必须与 Qdrant collection 维度一致；启动时会检查已有 collection 的维度。 |
 | `EMBEDDING_CONCURRENCY` | `1` | embedding 服务内部并发推理数量。 |
 | `EMBEDDING_BATCH_SIZE` | `32` | embedding 服务的批量推理大小。 |

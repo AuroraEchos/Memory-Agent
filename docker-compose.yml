@@ -38,7 +38,7 @@ services:
       - "8001"
     environment:
       EMBEDDING_MODEL: /app/models/bge-m3
-      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-cpu}
+      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-auto}
       EMBEDDING_CONCURRENCY: ${EMBEDDING_CONCURRENCY:-1}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-32}
     ports:

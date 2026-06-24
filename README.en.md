@@ -175,14 +175,17 @@ Docker setup notes:
 - Chainlit chat history, the chat list, and LangGraph short-term checkpoints
   are persisted in Docker named volume `chainlit_postgres_data`.
 - The app connects to Qdrant through `QDRANT_URL=http://qdrant:6333`.
-- The default Compose file installs the CPU PyTorch wheel.
+- The default Compose file installs the CPU PyTorch wheel, so `auto` selects
+  CPU inside the standard container.
 - The downloaded embedding model is mounted from `./models` into
   `embedding-service`.
 - `.env` is read at runtime and is never copied into the image.
 
-If you want to use a different embedding model, save it under `./models` and
-update the `EMBEDDING_MODEL` container path in `docker-compose.yml` and
-`EMBEDDING_DIMENSION` in `.env`.
+If you want to use a different embedding model, save it under `./models`,
+update the `EMBEDDING_MODEL` container path in `docker-compose.yml`, and update
+`EMBEDDING_DIMENSION` in `.env`. Vectors from different models must not be
+mixed, even when their dimensions match. Use a new `QDRANT_COLLECTION` when
+switching models, or migrate existing memories and regenerate their vectors.
 
 To stop the app:
 
@@ -272,6 +275,21 @@ uvicorn embedding_server:app --host 127.0.0.1 --port 8001
 
 `.env.example` defaults to `EMBEDDING_SERVICE_URL=http://127.0.0.1:8001`.
 
+The embedding service exposes `/health`, `/dimension`, and `/embed`. The health
+response includes the loaded model, device, and cached vector dimension.
+`/embed` accepts 1–256 non-blank texts per request, with at most 32,768
+characters per text. Both the service and remote client validate vector counts,
+dimensions, and numeric values, and reject model or dimension changes during a
+single client lifetime.
+
+`EMBEDDING_DEVICE=auto` checks CUDA, Intel XPU, and Apple MPS in that order,
+then falls back to CPU. You can also explicitly select `cpu`, `gpu`, `cuda`,
+`cuda:0`, `xpu`, `xpu:0`, or `mps`. Explicitly requesting an unavailable device
+fails during service startup instead of silently using CPU. GPU/XPU/MPS support
+depends on the installed PyTorch build and system drivers. The default Docker
+image installs CPU-only PyTorch; accelerator use in a container also requires a
+matching PyTorch build and access to the host device.
+
 ## Configuration
 
 The application reads configuration from `.env`.
@@ -292,7 +310,7 @@ The application reads configuration from `.env`.
 | `QDRANT_COLLECTION` | `agent_memories` | Qdrant collection name for long-term memories. |
 | `QDRANT_PREFER_GRPC` | `false` | Whether the Qdrant client should prefer gRPC. |
 | `EMBEDDING_MODEL` | `./models/bge-m3` | Model path loaded by the embedding service. Docker Compose overrides this to `/app/models/bge-m3`. |
-| `EMBEDDING_DEVICE` | `cpu` | Device used by the embedding service. CPU is the default and only supported runtime for now; legacy `auto` values are treated as CPU. |
+| `EMBEDDING_DEVICE` | `auto` | Embedding inference device. `auto` selects CUDA, Intel XPU, Apple MPS, then CPU; explicit values include `cpu`, `gpu`, `cuda[:N]`, `xpu[:N]`, and `mps`. |
 | `EMBEDDING_DIMENSION` | `1024` | Current embedding model output dimension. It must match the Qdrant collection dimension, and existing collection dimensions are checked at startup. |
 | `EMBEDDING_CONCURRENCY` | `1` | Embedding service inference concurrency. |
 | `EMBEDDING_BATCH_SIZE` | `32` | Embedding service inference batch size. |
