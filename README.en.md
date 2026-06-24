@@ -24,9 +24,6 @@ response, and extracts durable memory updates after each turn.
 - Chainlit UI with streaming and non-streaming responses.
 - Chainlit login, chat history list, chat resume, memory viewing, searching,
   deletion confirmation, and current-context display.
-- Tests covering configuration loading, short-term context building, the
-  embedding provider factory, long-term memory taxonomy, memory consolidation,
-  cross-namespace retrieval, and basic Qdrant store constraints.
 
 ## Project Layout
 
@@ -59,7 +56,6 @@ response, and extracts durable memory updates after each turn.
 │   ├── prompts.py               # Chat system prompt
 │   └── state.py                 # LangGraph state schema
 ├── scripts/sql/init_chainlit_schema.sql # Chainlit UI history schema
-├── tests/                       # Unit tests
 ├── pyproject.toml               # Python dependency metadata
 └── .env.example                 # Safe environment template
 ```
@@ -337,18 +333,6 @@ memory type, such as `memories/wenhao/persona` and
 
 If your shell exports `DEBUG=release`, Chainlit may parse it as its own boolean
 debug flag. Start Chainlit with `env -u DEBUG` as shown below.
-
-## Run Tests
-
-```bash
-source .venv/bin/activate
-python -m unittest discover -s tests
-```
-
-The tests cover configuration loading, PostgreSQL connection URL conversion,
-the remote-only embedding provider factory, short-term context building,
-long-term memory taxonomy, memory consolidation schema, cross-namespace retrieval,
-and the required Qdrant URL constraint.
 
 ## Run The Chainlit App
 
