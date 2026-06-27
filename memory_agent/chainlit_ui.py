@@ -1,4 +1,4 @@
-"""Chainlit UI helpers for sessions, actions, and memory rendering."""
+"""Chainlit UI helpers for sessions and response metrics."""
 
 import math
 from typing import Any

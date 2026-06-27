@@ -22,8 +22,9 @@ response, and extracts durable memory updates after each turn.
   the main app process does not load the embedding model.
 - OpenAI-compatible chat model configuration.
 - Chainlit UI with streaming and non-streaming responses.
-- Chainlit login, chat history list, chat resume, memory viewing, searching,
-  deletion confirmation, and current-context display.
+- Chainlit login, chat history list, chat resume, and a streamlined chat UI.
+- Long-term memory retrieval, extraction, and updates run automatically in the
+  backend without manual UI triggers.
 
 ## Project Layout
 
@@ -256,17 +257,20 @@ memory type, such as `memories/wenhao/persona` and
 `memories/wenhao/project`, and Chainlit history plus LangGraph
 `Context.user_id` also use `wenhao`.
 
-## UI Actions
+## UI Notes
 
-The UI provides actions for:
+The current UI provides:
 
 - Viewing the Chainlit chat history list after login.
 - Resuming a historical chat with the same LangGraph thread checkpoint.
-- Viewing all long-term memories.
-- Searching memories by query.
-- Inspecting the current user, thread, model, and recent memory hits.
-- Viewing LLM first-token latency and token usage at the end of each assistant response.
-- Deleting individual memories after confirmation.
+- Displaying assistant responses in streaming or non-streaming mode.
+- Showing LLM first-token latency and token usage at the end of each
+  assistant response.
+
+The current version intentionally removes per-message copy, feedback, memory
+inspection, memory search, current-status, and delete-confirmation buttons.
+Long-term memory retrieval, extraction, and updates still happen automatically
+in the backend.
 
 ## Data And Ignored Files
 
@@ -275,7 +279,7 @@ The repository ignores local runtime artifacts:
 - `.env`
 - `qdrant_data/` (legacy local Qdrant data directory)
 - `models/` (legacy host-side model directory)
-- `.chainlit/`
+- `.chainlit/*` (while keeping `.chainlit/config.toml` versioned)
 - `chainlit.md`
 - Python cache directories
 - Local ZIP archives

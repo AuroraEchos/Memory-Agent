@@ -15,7 +15,8 @@ Memory Agent 是一个基于 LangGraph、Chainlit、Qdrant 和可服务化 embed
 - 仅通过独立 embedding 服务生成向量，避免主进程加载 embedding 模型。
 - 支持 OpenAI-compatible 聊天模型配置。
 - 提供支持流式和非流式回复的 Chainlit UI。
-- 支持 Chainlit 登录、会话历史列表、会话恢复、记忆查看、搜索、删除确认和当前上下文展示。
+- 支持 Chainlit 登录、会话历史列表、会话恢复，以及精简后的聊天界面展示。
+- 长期记忆的检索、提取与更新由后端自动完成，无需在 UI 中手动触发。
 
 ## 项目结构
 
@@ -211,17 +212,16 @@ docker compose down -v
 
 身份来源只有 Chainlit authenticated user。典型配置中可以使用 `CHAINLIT_AUTH_USERNAME=admin` 作为登录账号，同时设置 `CHAINLIT_AUTH_USER_ID=wenhao`；应用内的 Qdrant namespace 按记忆类型拆分，例如 `memories/wenhao/persona` 和 `memories/wenhao/project`，Chainlit 历史用户和 LangGraph `Context.user_id` 也都是 `wenhao`。
 
-## UI 能力
+## UI 说明
 
-UI 提供：
+当前 UI 提供：
 
 - 登录后查看 Chainlit 会话历史列表。
 - 从历史列表恢复会话，并继续使用同一个 LangGraph thread checkpoint。
-- 查看全部长期记忆。
-- 按查询语句搜索记忆。
-- 查看当前用户、线程、模型与近期命中记忆。
-- 在每轮助手回复末尾查看 LLM 首响耗时和该轮 LLM token 用量。
-- 对单条记忆进行删除确认。
+- 以流式或非流式方式显示助手回复。
+- 在每轮助手回复末尾显示 LLM 首响耗时和该轮 LLM token 用量。
+
+当前版本默认移除了消息末尾的复制、评价、查看记忆、搜索记忆、当前状态和删除确认等按钮。长期记忆的检索、提取与更新仍会在后端自动执行，不需要手动操作。
 
 ## 数据与忽略文件
 
@@ -230,7 +230,7 @@ UI 提供：
 - `.env`
 - `qdrant_data/`（旧版本地 Qdrant 数据目录）
 - `models/`（旧版宿主机模型目录）
-- `.chainlit/`
+- `.chainlit/*`（保留版本化的 `.chainlit/config.toml`）
 - `chainlit.md`
 - Python 缓存目录
 - 本地压缩包
