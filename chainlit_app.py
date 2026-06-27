@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 import chainlit as cl
@@ -22,9 +21,6 @@ from memory_agent.chainlit_ui import (
     ASSISTANT_AUTHOR,
     content_to_text,
     event_output_to_text,
-    extract_token_usage,
-    format_response_latency,
-    format_token_usage,
     get_session_thread_id,
     get_session_user_id,
     init_session,
@@ -279,56 +275,6 @@ async def on_message(message: cl.Message):
     streamed = False
     error_after_stream = False
     response_finalized = False
-    token_usage: dict[str, int] = {}
-    llm_started_at: float | None = None
-    first_response_latency: float | None = None
-    metrics_footer_started = False
-    latency_displayed = False
-    token_usage_displayed = False
-
-    def mark_llm_started() -> None:
-        """Record when the chat model call starts."""
-
-        nonlocal llm_started_at
-
-        if llm_started_at is None:
-            llm_started_at = time.perf_counter()
-
-    def mark_first_response_ready() -> None:
-        """Record when the first chat model content is ready to display."""
-
-        nonlocal first_response_latency
-
-        if first_response_latency is None and llm_started_at is not None:
-            first_response_latency = time.perf_counter() - llm_started_at
-
-    async def maybe_append_response_metrics() -> None:
-        """Append visible response timing and token usage metrics."""
-
-        nonlocal latency_displayed, metrics_footer_started, token_usage_displayed
-
-        latency_line = format_response_latency(first_response_latency)
-        usage_line = format_token_usage(token_usage)
-
-        lines: list[str] = []
-        if latency_line and not latency_displayed:
-            lines.append(latency_line)
-            latency_displayed = True
-        if usage_line and not token_usage_displayed:
-            lines.append(usage_line)
-            token_usage_displayed = True
-
-        if not lines:
-            return
-
-        response_msg.content = response_msg.content.rstrip()
-        separator = "\n" if metrics_footer_started else "\n\n---\n"
-        response_msg.content += separator + "\n".join(lines)
-        metrics_footer_started = True
-
-        if response_finalized:
-            await response_msg.update()
-            await persist_message_step(response_msg)
 
     async def finalize_response(*, fallback_empty: bool = False) -> bool:
         """Send and persist the assistant response exactly once."""
@@ -343,7 +289,6 @@ async def on_message(message: cl.Message):
                 return False
             response_msg.content = "抱歉，这轮对话没有生成有效回复。请稍后重试。"
 
-        await maybe_append_response_metrics()
         await response_msg.send()
         await persist_message_step(response_msg)
         response_finalized = True
@@ -368,10 +313,6 @@ async def on_message(message: cl.Message):
             if node_name != "call_model":
                 continue
 
-            if event_type == "on_chat_model_start":
-                mark_llm_started()
-                continue
-
             if event_type == "on_chat_model_stream":
                 chunk = data.get("chunk")
                 if chunk is None:
@@ -380,7 +321,6 @@ async def on_message(message: cl.Message):
                 token = content_to_text(getattr(chunk, "content", ""))
 
                 if token:
-                    mark_first_response_ready()
                     streamed = True
                     await response_msg.stream_token(token)
 
@@ -388,15 +328,10 @@ async def on_message(message: cl.Message):
 
             if event_type in {"on_chat_model_end", "on_chain_end"}:
                 output = data.get("output")
-                current_token_usage = extract_token_usage(output)
-                if current_token_usage:
-                    token_usage = current_token_usage
 
                 final_text = event_output_to_text(output)
                 if final_text and not response_msg.content.strip():
-                    mark_first_response_ready()
                     response_msg.content = final_text
-                await maybe_append_response_metrics()
                 await finalize_response()
 
     except Exception:

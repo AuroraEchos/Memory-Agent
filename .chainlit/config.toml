@@ -1,5 +1,10 @@
 [UI]
 name = "Memory Agent"
+default_theme = "light"
+layout = "wide"
+alert_style = "modern"
+avatar_size = 56
+custom_css = "/public/memory-agent.css"
 custom_js = "/public/hide-message-actions.js"
 
 [meta]

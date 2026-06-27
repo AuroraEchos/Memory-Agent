@@ -264,8 +264,6 @@ The current UI provides:
 - Viewing the Chainlit chat history list after login.
 - Resuming a historical chat with the same LangGraph thread checkpoint.
 - Displaying assistant responses in streaming or non-streaming mode.
-- Showing LLM first-token latency and token usage at the end of each
-  assistant response.
 
 The current version intentionally removes per-message copy, feedback, memory
 inspection, memory search, current-status, and delete-confirmation buttons.
