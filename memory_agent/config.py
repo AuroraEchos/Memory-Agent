@@ -9,6 +9,13 @@ from typing_extensions import Annotated
 from memory_agent.prompts import SYSTEM_PROMPT
 
 
+DEFAULT_QDRANT_URL = "http://qdrant:6333"
+DEFAULT_EMBEDDING_SERVICE_URL = "http://embedding-service:8001"
+DEFAULT_CHAINLIT_DATABASE_URL = (
+    "postgresql+asyncpg://memory_agent:memory_agent@chainlit-postgres:5432/chainlit"
+)
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     """Read a boolean environment variable with common truthy spellings."""
 
@@ -75,21 +82,6 @@ def env_str(name: str, default: str | None = None) -> str | None:
 
     value = value.strip()
     return value or default
-
-
-def required_env_str(name: str) -> str:
-    """Read a required string environment variable."""
-
-    value = env_str(name)
-
-    if not value:
-        raise ValueError(
-            f"{name} is required. For host development use "
-            f"{name}=http://localhost:6333; inside Docker Compose use "
-            f"{name}=http://qdrant:6333."
-        )
-
-    return value
 
 
 def to_psycopg_conninfo(database_url: str) -> str:
@@ -171,18 +163,27 @@ def load_settings() -> AppSettings:
         llm_trust_env=env_bool("LLM_TRUST_ENV", False),
         llm_streaming=env_bool("LLM_STREAMING", True),
 
-        qdrant_url=required_env_str("QDRANT_URL"),
+        qdrant_url=env_str("QDRANT_URL", DEFAULT_QDRANT_URL)
+        or DEFAULT_QDRANT_URL,
         qdrant_api_key=env_str("QDRANT_API_KEY"),
         qdrant_collection=env_str("QDRANT_COLLECTION", "agent_memories")
         or "agent_memories",
         qdrant_prefer_grpc=env_bool("QDRANT_PREFER_GRPC", False),
 
         embedding_dimension=env_int("EMBEDDING_DIMENSION", 1024),
-        embedding_service_url=env_str("EMBEDDING_SERVICE_URL"),
+        embedding_service_url=env_str(
+            "EMBEDDING_SERVICE_URL",
+            DEFAULT_EMBEDDING_SERVICE_URL,
+        )
+        or DEFAULT_EMBEDDING_SERVICE_URL,
         embedding_timeout=env_float("EMBEDDING_TIMEOUT", 30.0),
         embedding_trust_env=env_bool("EMBEDDING_TRUST_ENV", False),
 
-        chainlit_database_url=env_str("CHAINLIT_DATABASE_URL"),
+        chainlit_database_url=env_str(
+            "CHAINLIT_DATABASE_URL",
+            DEFAULT_CHAINLIT_DATABASE_URL,
+        )
+        or DEFAULT_CHAINLIT_DATABASE_URL,
         chainlit_auth_secret=env_str("CHAINLIT_AUTH_SECRET"),
         chainlit_auth_username=env_str("CHAINLIT_AUTH_USERNAME"),
         chainlit_auth_password=env_str("CHAINLIT_AUTH_PASSWORD"),

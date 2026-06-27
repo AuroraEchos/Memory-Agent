@@ -217,7 +217,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 chainlit.md
-.chainlit/
+.chainlit/*
+!.chainlit/config.toml
 .vscode/
 models/
 qdrant_data/

@@ -1,4 +1,5 @@
-.chainlit/
+.chainlit/*
+!.chainlit/config.toml
 .env
 .envrc
 .files/

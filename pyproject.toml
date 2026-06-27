@@ -10,18 +10,21 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { file = "LICENSE" }
 dependencies = [
+    "torch>=2.0.0,<3.0.0",
+    "torchvision>=0.15.0,<0.30.0",
+    "numpy",
+    "sentence-transformers",
+    
     "chainlit",
     "httpx",
     "langchain",
     "langchain-core",
     "langchain-openai",
     "langgraph",
-    "numpy>=2.3.0",
     "pydantic",
     "python-dotenv",
-    "sentence-transformers",
     "typing-extensions",
-    "qdrant-client>=1.18.0",
+    "qdrant-client",
     "fastapi",
     "uvicorn",
     "langgraph-checkpoint-postgres",
@@ -35,3 +38,12 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["memory_agent"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }

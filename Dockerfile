@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
@@ -16,16 +17,19 @@ ARG APP_GID=1000
 RUN groupadd --gid "${APP_GID}" app \
     && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home app
 
-COPY --chown=app:app pyproject.toml README.md LICENSE ./
+COPY --chown=app:app pyproject.toml LICENSE README.md ./
+
+RUN uv pip install --system \
+    --extra-index-url https://pypi.org/simple \
+    .
+
+COPY --chown=app:app .chainlit/config.toml ./.chainlit/config.toml
 COPY --chown=app:app memory_agent ./memory_agent
+COPY --chown=app:app public ./public
+COPY --chown=app:app scripts ./scripts
 COPY --chown=app:app chainlit_app.py embedding_server.py ./
 
-# sentence-transformers depends on torch; install the CPU wheel first so the
-# image always uses the same runtime.
-RUN pip install --upgrade pip \
-    && pip install --index-url https://download.pytorch.org/whl/cpu torch==2.12.0+cpu \
-    && pip install -e . \
-    && mkdir -p /app/models /app/.files /app/.chainlit \
+RUN mkdir -p /app/models /app/.files /app/.chainlit \
     && chown -R app:app /app /home/app
 
 USER app

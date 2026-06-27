@@ -226,7 +226,7 @@ class QdrantMemoryStore:
                     exc_info=True,
                 )
 
-    def _ensure_collection_with_retry(self, attempts: int = 10) -> None:
+    def _ensure_collection_with_retry(self, attempts: int = 20) -> None:
         """Retry collection initialization while Qdrant starts up."""
 
         for attempt in range(1, attempts + 1):
@@ -238,7 +238,16 @@ class QdrantMemoryStore:
             except Exception:
                 if attempt == attempts:
                     raise
-                time.sleep(min(0.5 * attempt, 3.0))
+                delay = min(0.75 * attempt, 5.0)
+                logger.warning(
+                    "Qdrant is not ready yet; retrying collection setup "
+                    "(attempt %s/%s) in %.2fs.",
+                    attempt,
+                    attempts,
+                    delay,
+                    exc_info=True,
+                )
+                time.sleep(delay)
 
     def _build_filter(
         self,

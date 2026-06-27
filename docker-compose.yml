@@ -5,19 +5,31 @@ x-app-build: &app-build
     APP_GID: ${APP_GID:-1000}
 
 services:
+  # ----------------------------------------------------
+  # 0. 模型准备：首次启动时下载 embedding 模型
+  # ----------------------------------------------------
+  model-downloader:
+    build: *app-build
+    env_file:
+      - .env
+    command:
+      - python
+      - scripts/download_embedding_model.py
+    environment:
+      EMBEDDING_MODEL: /app/models/current
+      EMBEDDING_MODEL_SOURCE: ${EMBEDDING_MODEL_SOURCE:-BAAI/bge-m3}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    volumes:
+      - embedding_models:/app/models
+    restart: "no"
+
+  # ----------------------------------------------------
+  # 1. 前端大脑：Memory Agent
+  # ----------------------------------------------------
   memory-agent:
     build: *app-build
     env_file:
       - .env
-    environment:
-      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
-      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
-      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-agent_memories}
-      QDRANT_PREFER_GRPC: ${QDRANT_PREFER_GRPC:-false}
-      EMBEDDING_SERVICE_URL: http://embedding-service:8001
-      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
-      EMBEDDING_TIMEOUT: ${EMBEDDING_TIMEOUT:-30}
-      EMBEDDING_TRUST_ENV: ${EMBEDDING_TRUST_ENV:-false}
     ports:
       - "8000:8000"
     depends_on:
@@ -25,10 +37,19 @@ services:
         condition: service_started
       embedding-service:
         condition: service_healthy
+      # 融合：必须等新来的数据库健康后，大脑才能启动
+      chainlit-postgres:
+        condition: service_healthy
     restart: unless-stopped
 
+  # ----------------------------------------------------
+  # 2. 算力担当：嵌入向量服务
+  # ----------------------------------------------------
   embedding-service:
     build: *app-build
+    depends_on:
+      model-downloader:
+        condition: service_completed_successfully
     command:
       - uvicorn
       - embedding_server:app
@@ -37,14 +58,14 @@ services:
       - --port
       - "8001"
     environment:
-      EMBEDDING_MODEL: /app/models/bge-m3
-      EMBEDDING_DEVICE: ${EMBEDDING_DEVICE:-auto}
+      EMBEDDING_MODEL: /app/models/current
+      EMBEDDING_DEVICE: cpu
       EMBEDDING_CONCURRENCY: ${EMBEDDING_CONCURRENCY:-1}
       EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-32}
     ports:
       - "8001:8001"
     volumes:
-      - ./models:/app/models:ro
+      - embedding_models:/app/models:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8001/health"]
       interval: 15s
@@ -53,6 +74,9 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ----------------------------------------------------
+  # 3. 向量地基：Qdrant 向量数据库
+  # ----------------------------------------------------
   qdrant:
     image: qdrant/qdrant:v1.15.0
     ports:
@@ -62,5 +86,32 @@ services:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
+  # ----------------------------------------------------
+  # 4. 融合注入：关系型历史数据库 Postgres
+  # ----------------------------------------------------
+  chainlit-postgres:
+    image: postgres:16
+    container_name: memory-agent-chainlit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: memory_agent
+      POSTGRES_PASSWORD: memory_agent
+      POSTGRES_DB: chainlit
+    ports:
+      - "5432:5432"
+    volumes:
+      - chainlit_postgres_data:/var/lib/postgresql/data
+      - ./scripts/sql/init_chainlit_schema.sql:/docker-entrypoint-initdb.d/01-init_chainlit_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory_agent -d chainlit"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+# ----------------------------------------------------
+# 5. 数据持久化卷声明
+# ----------------------------------------------------
 volumes:
+  embedding_models:
   qdrant_storage:
+  chainlit_postgres_data:  # 融合：别忘了把这个数据卷也合并进来

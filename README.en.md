@@ -30,8 +30,7 @@ response, and extracts durable memory updates after each turn.
 ```text
 .
 ├── chainlit_app.py              # Chainlit web UI entrypoint
-├── docker-compose.chainlit-db.yml # Optional PostgreSQL persistence service
-├── docker-compose.yml           # Docker Compose runtime with Qdrant and embedding
+├── docker-compose.yml           # Docker Compose runtime for all app services
 ├── Dockerfile                   # Application image
 ├── embedding_server.py          # FastAPI embedding service entrypoint
 ├── memory_agent/
@@ -55,6 +54,7 @@ response, and extracts durable memory updates after each turn.
 │   │       └── qdrant.py        # Qdrant vector memory store
 │   ├── prompts.py               # Chat system prompt
 │   └── state.py                 # LangGraph state schema
+├── scripts/download_embedding_model.py # One-shot Docker model downloader
 ├── scripts/sql/init_chainlit_schema.sql # Chainlit UI history schema
 ├── pyproject.toml               # Python dependency metadata
 └── .env.example                 # Safe environment template
@@ -86,14 +86,16 @@ Identity and linking rules:
 
 ## Requirements
 
-- Python 3.12 or newer.
+- Docker Engine with the Docker Compose plugin.
 - An OpenAI-compatible chat completion endpoint.
-- PostgreSQL for Chainlit UI history and LangGraph short-term checkpoints.
-- Qdrant server, either started locally with Docker Compose or provided by a
-  remote service.
 - Enough disk space for the embedding model.
 
-The project was developed against the dependency versions pinned in
+The default workflow is Docker-only: `memory-agent`, `embedding-service`,
+`qdrant`, and `chainlit-postgres` are started and managed through
+`docker compose`. Running `chainlit_app.py` or `embedding_server.py` directly
+on the host is no longer the recommended setup.
+
+The images are built and validated against the dependency versions pinned in
 `pyproject.toml`.
 
 ## Quick Start With Docker
@@ -123,29 +125,24 @@ On Linux, keep `APP_UID=1000` and `APP_GID=1000` for the common default user,
 or change them to the output of `id -u` and `id -g` before building the image.
 The container runs as this non-root user.
 
-Download the embedding model on the host machine.
+Model downloading uses a Hugging Face mirror by default. To override it, set
+this in `.env`:
 
-If downloads are slow, set a Hugging Face mirror first:
-
-```bash
-export HF_ENDPOINT=https://hf-mirror.com
-```
-
-```bash
-mkdir -p models
-python3 - <<'PY'
-from sentence_transformers import SentenceTransformer
-
-model = SentenceTransformer("BAAI/bge-m3")
-model.save("./models/bge-m3")
-PY
+```env
+HF_ENDPOINT=https://hf-mirror.com
 ```
 
 Start the app:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up --build
+docker compose up --build
 ```
+
+On first startup, Compose runs the one-shot `model-downloader` service before
+the embedding service. It downloads `EMBEDDING_MODEL_SOURCE` into the Docker
+named volume `embedding_models`, using
+`HF_ENDPOINT=https://hf-mirror.com` by default. Later startups reuse that
+cached model unless the requested source changes.
 
 Open:
 
@@ -155,33 +152,46 @@ http://127.0.0.1:8000
 
 Docker setup notes:
 
-- The default Compose file starts dedicated `embedding-service` and `qdrant`
-  services.
-- `docker-compose.chainlit-db.yml` starts `chainlit-postgres` and overrides
-  `CHAINLIT_DATABASE_URL` inside the app container.
-- `docker-compose.chainlit-db.yml` mounts
-  `scripts/sql/init_chainlit_schema.sql` into the Postgres init directory. The
-  script creates the Chainlit UI history tables and runs automatically only
-  when a new `chainlit_postgres_data` volume is initialized for the first time.
-  LangGraph checkpoint tables are created or migrated by the app on startup.
+- The default Compose file starts dedicated `model-downloader`,
+  `embedding-service`, `qdrant`, and `chainlit-postgres` services.
+- `docker-compose.yml` mounts `scripts/sql/init_chainlit_schema.sql` into the
+  Postgres init directory. The script creates the Chainlit UI history tables
+  and runs automatically only when a new `chainlit_postgres_data` volume is
+  initialized for the first time. LangGraph checkpoint tables are created or
+  migrated by the app on startup.
 - `memory-agent` requests vectors through
   `EMBEDDING_SERVICE_URL=http://embedding-service:8001` and does not load the
   embedding model in the main process.
+- `model-downloader` fetches `EMBEDDING_MODEL_SOURCE` into the Docker named
+  volume `embedding_models`, and `embedding-service` mounts that volume
+  read-only and loads the model from `/app/models/current`.
+- Embedding model data is persisted in the Docker named volume
+  `embedding_models`.
 - Qdrant data is persisted in Docker named volume `qdrant_storage`.
 - Chainlit chat history, the chat list, and LangGraph short-term checkpoints
   are persisted in Docker named volume `chainlit_postgres_data`.
 - The app connects to Qdrant through `QDRANT_URL=http://qdrant:6333`.
-- The default Compose file installs the CPU PyTorch wheel, so `auto` selects
-  CPU inside the standard container.
-- The downloaded embedding model is mounted from `./models` into
-  `embedding-service`.
+- The app connects to PostgreSQL through
+  `CHAINLIT_DATABASE_URL=postgresql+asyncpg://memory_agent:memory_agent@chainlit-postgres:5432/chainlit`.
+- `embedding-service` waits for `model-downloader` to complete successfully
+  before startup.
+- `memory-agent` waits for the embedding service and PostgreSQL health checks
+  before startup. Qdrant readiness is handled by application-level retries,
+  which avoids transient `Connection refused` errors while Qdrant is still
+  booting.
+- The default Compose file pins the embedding service to
+  `EMBEDDING_DEVICE=cpu`, so container inference always runs on CPU without
+  accelerator detection.
+- `.env` is meant for user-facing app settings; internal container service
+  addresses usually do not need to be written there.
 - `.env` is read at runtime and is never copied into the image.
 
-If you want to use a different embedding model, save it under `./models`,
-update the `EMBEDDING_MODEL` container path in `docker-compose.yml`, and update
-`EMBEDDING_DIMENSION` in `.env`. Vectors from different models must not be
-mixed, even when their dimensions match. Use a new `QDRANT_COLLECTION` when
-switching models, or migrate existing memories and regenerate their vectors.
+If you want to use a different embedding model, update
+`EMBEDDING_MODEL_SOURCE` in `.env` and also update `EMBEDDING_DIMENSION`.
+Vectors from different models must not be mixed, even when their dimensions
+match. Use a new `QDRANT_COLLECTION` when switching models, or migrate
+existing memories and regenerate their vectors. To force-clear the old model
+cache, run `docker compose down -v`.
 
 To stop the app:
 
@@ -189,10 +199,10 @@ To stop the app:
 docker compose down
 ```
 
-To reset Docker Qdrant and PostgreSQL data:
+To reset Docker embedding, Qdrant, and PostgreSQL data:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml down -v
+docker compose down -v
 ```
 
 If you already have an older `chainlit_postgres_data` volume, the new Chainlit
@@ -200,95 +210,12 @@ init script will not run retroactively. Apply the SQL manually or reset the
 volume with the command above. LangGraph checkpoint tables are created or
 migrated by the app on startup.
 
-## Setup
-
-Create and activate a virtual environment:
-
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-```
-
-Install the project dependencies:
-
-```bash
-pip install -e .
-```
-
-Create your local environment file:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and set at least:
-
-```bash
-LLM_API_KEY=replace-with-your-api-key
-LLM_BASE_URL=https://your-openai-compatible-endpoint/v1
-LLM_MODEL=your-model-name
-CHAINLIT_AUTH_SECRET=replace-with-a-random-secret
-CHAINLIT_AUTH_USERNAME=your-login-name
-CHAINLIT_AUTH_PASSWORD=your-login-password
-CHAINLIT_AUTH_USER_ID=wenhao
-```
-
-Download the embedding model into the default local path.
-
-If downloads are slow, set a Hugging Face mirror first:
-
-```bash
-export HF_ENDPOINT=https://hf-mirror.com
-```
-
-```bash
-python - <<'PY'
-from sentence_transformers import SentenceTransformer
-
-model = SentenceTransformer("BAAI/bge-m3")
-model.save("./models/bge-m3")
-PY
-```
-
-Local runs must connect to a Qdrant server; the app no longer uses
-`QdrantClient(path=...)` embedded/local mode. You can start Qdrant with Docker:
-
-```bash
-docker compose up -d qdrant
-```
-
-For local Python runs, set `QDRANT_URL=http://127.0.0.1:6333`. Docker Compose
-sets the app container to `http://qdrant:6333`. To connect to a remote Qdrant
-server, set `QDRANT_URL` to that server URL.
-
-The app only supports the remote embedding provider. Start the standalone
-embedding service before running the Chainlit app:
-
-```bash
-source .venv/bin/activate
-uvicorn embedding_server:app --host 127.0.0.1 --port 8001
-```
-
-`.env.example` defaults to `EMBEDDING_SERVICE_URL=http://127.0.0.1:8001`.
-
-The embedding service exposes `/health`, `/dimension`, and `/embed`. The health
-response includes the loaded model, device, and cached vector dimension.
-`/embed` accepts 1–256 non-blank texts per request, with at most 32,768
-characters per text. Both the service and remote client validate vector counts,
-dimensions, and numeric values, and reject model or dimension changes during a
-single client lifetime.
-
-`EMBEDDING_DEVICE=auto` checks CUDA, Intel XPU, and Apple MPS in that order,
-then falls back to CPU. You can also explicitly select `cpu`, `gpu`, `cuda`,
-`cuda:0`, `xpu`, `xpu:0`, or `mps`. Explicitly requesting an unavailable device
-fails during service startup instead of silently using CPU. GPU/XPU/MPS support
-depends on the installed PyTorch build and system drivers. The default Docker
-image installs CPU-only PyTorch; accelerator use in a container also requires a
-matching PyTorch build and access to the host device.
-
 ## Configuration
 
-The application reads configuration from `.env`.
+The application reads user-facing settings from `.env`. Docker Compose and the
+app defaults wire the internal Qdrant, embedding-service, and PostgreSQL
+addresses automatically, so you usually do not need to write those URLs into
+`.env`.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -301,28 +228,26 @@ The application reads configuration from `.env`.
 | `LLM_TIMEOUT` | `30` | LLM request timeout in seconds. |
 | `LLM_TRUST_ENV` | `false` | Whether HTTP clients should use proxy variables from the environment. |
 | `LLM_STREAMING` | `true` | Whether normal chat responses should stream. When disabled, Chainlit uses the model's final output. |
-| `QDRANT_URL` | `http://127.0.0.1:6333` | Required Qdrant server URL. For local development, start it with `docker compose up -d qdrant`; the Docker Compose app container overrides this to `http://qdrant:6333`. |
-| `QDRANT_API_KEY` | none | Remote Qdrant API key. |
+| `HF_ENDPOINT` | `https://hf-mirror.com` | Default Hugging Face mirror URL used by `model-downloader`. |
 | `QDRANT_COLLECTION` | `agent_memories` | Qdrant collection name for long-term memories. |
-| `QDRANT_PREFER_GRPC` | `false` | Whether the Qdrant client should prefer gRPC. |
-| `EMBEDDING_MODEL` | `./models/bge-m3` | Model path loaded by the embedding service. Docker Compose overrides this to `/app/models/bge-m3`. |
-| `EMBEDDING_DEVICE` | `auto` | Embedding inference device. `auto` selects CUDA, Intel XPU, Apple MPS, then CPU; explicit values include `cpu`, `gpu`, `cuda[:N]`, `xpu[:N]`, and `mps`. |
+| `EMBEDDING_MODEL_SOURCE` | `BAAI/bge-m3` | Hugging Face model id downloaded by `model-downloader` during first startup. |
 | `EMBEDDING_DIMENSION` | `1024` | Current embedding model output dimension. It must match the Qdrant collection dimension, and existing collection dimensions are checked at startup. |
-| `EMBEDDING_CONCURRENCY` | `1` | Embedding service inference concurrency. |
-| `EMBEDDING_BATCH_SIZE` | `32` | Embedding service inference batch size. |
-| `EMBEDDING_SERVICE_URL` | `http://127.0.0.1:8001` | Embedding service URL called by the main app; the Docker Compose app container overrides this to `http://embedding-service:8001`. |
 | `EMBEDDING_TIMEOUT` | `30` | Remote embedding request timeout in seconds. |
 | `EMBEDDING_TRUST_ENV` | `false` | Whether the remote embedding HTTP client should use proxy variables from the environment. |
 | `CHAINLIT_AUTH_SECRET` | none | Secret used by Chainlit login/session cookies. Required when chat history is enabled. |
 | `CHAINLIT_AUTH_USERNAME` | none | Chainlit password login username. |
 | `CHAINLIT_AUTH_PASSWORD` | none | Chainlit password login password. |
 | `CHAINLIT_AUTH_USER_ID` | none | Required. Chainlit authenticated user identifier. Long-term memory, chat history, and LangGraph context all use this identity. |
-| `CHAINLIT_DATABASE_URL` | none | PostgreSQL database URL for Chainlit chat history, the chat list, and LangGraph short-term checkpoints. The Docker Postgres override replaces it with the in-network service URL. |
 | `LANGGRAPH_STRICT_MSGPACK` | `true` | LangGraph checkpoint serialization safety switch. Keep it enabled unless you have a compatibility reason to change it. |
 | `CONVERSATION_MESSAGE_WINDOW` | `20` | Maximum message budget for short-term conversation context. The context builder prioritizes the current user message and recent complete turns; long-term memories are still retrieved from Qdrant and injected separately. |
 | `APP_UID` | `1000` | Docker image user id used by Compose build args. |
 | `APP_GID` | `1000` | Docker image group id used by Compose build args. |
 | `APP_DEBUG` | `false` | Enables extra backend debug output. |
+
+If you intentionally need a different topology, you can still add advanced
+variables manually, such as `QDRANT_URL`, `QDRANT_API_KEY`,
+`QDRANT_PREFER_GRPC`, `EMBEDDING_SERVICE_URL`, `CHAINLIT_DATABASE_URL`,
+`EMBEDDING_CONCURRENCY`, `EMBEDDING_BATCH_SIZE`, or `EMBEDDING_MODEL`.
 
 The application has exactly one user identity source: the Chainlit
 authenticated user. A typical setup can use `CHAINLIT_AUTH_USERNAME=admin` for
@@ -331,37 +256,7 @@ memory type, such as `memories/wenhao/persona` and
 `memories/wenhao/project`, and Chainlit history plus LangGraph
 `Context.user_id` also use `wenhao`.
 
-If your shell exports `DEBUG=release`, Chainlit may parse it as its own boolean
-debug flag. Start Chainlit with `env -u DEBUG` as shown below.
-
-## Run The Chainlit App
-
-If you use the local service URLs from `.env.example`, start Qdrant and
-PostgreSQL first:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.chainlit-db.yml up -d qdrant chainlit-postgres
-```
-
-Then start the standalone embedding service:
-
-```bash
-source .venv/bin/activate
-uvicorn embedding_server:app --host 127.0.0.1 --port 8001
-```
-
-Finally start Chainlit:
-
-```bash
-source .venv/bin/activate
-env -u DEBUG chainlit run chainlit_app.py -w --host 127.0.0.1 --port 8000
-```
-
-Open:
-
-```text
-http://127.0.0.1:8000
-```
+## UI Actions
 
 The UI provides actions for:
 
@@ -379,13 +274,14 @@ The repository ignores local runtime artifacts:
 
 - `.env`
 - `qdrant_data/` (legacy local Qdrant data directory)
-- `models/`
+- `models/` (legacy host-side model directory)
 - `.chainlit/`
 - `chainlit.md`
 - Python cache directories
 - Local ZIP archives
 
-Do not commit API keys, legacy local Qdrant data, or downloaded model weights.
+Do not commit API keys, legacy local Qdrant data, or manually downloaded model
+weights.
 
 ## Notes
 

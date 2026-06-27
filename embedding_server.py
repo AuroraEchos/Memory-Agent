@@ -2,10 +2,8 @@
 
 import asyncio
 import math
-import re
 from contextlib import asynccontextmanager
 
-import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -74,7 +72,7 @@ class EmbeddingModelService:
         self,
         *,
         model_name_or_path: str,
-        device: str = "auto",
+        device: str = "cpu",
         concurrency: int = 1,
         batch_size: int = 32,
     ) -> None:
@@ -92,105 +90,16 @@ class EmbeddingModelService:
         self._dimension = self._read_model_dimension()
 
     @staticmethod
-    def _cuda_is_available() -> bool:
-        """Return whether the current PyTorch runtime can use CUDA."""
-
-        return bool(torch.cuda.is_available())
-
-    @staticmethod
-    def _xpu_is_available() -> bool:
-        """Return whether the current PyTorch runtime can use Intel XPU."""
-
-        xpu = getattr(torch, "xpu", None)
-        is_available = getattr(xpu, "is_available", None)
-        return bool(callable(is_available) and is_available())
-
-    @staticmethod
-    def _mps_is_available() -> bool:
-        """Return whether the current PyTorch runtime can use Apple MPS."""
-
-        mps = getattr(torch.backends, "mps", None)
-        is_available = getattr(mps, "is_available", None)
-        return bool(callable(is_available) and is_available())
-
-    @classmethod
-    def _detect_device(cls) -> str:
-        """Choose the best accelerator exposed by the PyTorch runtime."""
-
-        if cls._cuda_is_available():
-            return "cuda"
-        if cls._xpu_is_available():
-            return "xpu"
-        if cls._mps_is_available():
-            return "mps"
-        return "cpu"
-
-    @classmethod
-    def _resolve_device(cls, device: str) -> str:
-        """Resolve auto selection or validate an explicitly requested device."""
+    def _resolve_device(device: str) -> str:
+        """Normalize embedding inference to the project's CPU-only runtime."""
 
         normalized = device.strip().lower()
-
-        if normalized in {"", "auto"}:
-            return cls._detect_device()
-
-        if normalized == "cpu":
+        if normalized in {"", "cpu"}:
             return "cpu"
 
-        if normalized == "gpu":
-            detected = cls._detect_device()
-            if detected == "cpu":
-                raise ValueError(
-                    "EMBEDDING_DEVICE=gpu was requested, but no supported GPU "
-                    "backend is available in the current PyTorch runtime."
-                )
-            return detected
-
-        cuda_match = re.fullmatch(r"cuda(?::(\d+))?", normalized)
-        if cuda_match:
-            if not cls._cuda_is_available():
-                raise ValueError(
-                    f"EMBEDDING_DEVICE={device!r} was requested, but CUDA is "
-                    "not available. Install a CUDA-enabled PyTorch build and "
-                    "check the GPU driver/runtime."
-                )
-
-            index = cuda_match.group(1)
-            if index is not None and int(index) >= torch.cuda.device_count():
-                raise ValueError(
-                    f"EMBEDDING_DEVICE={device!r} refers to an unavailable "
-                    f"CUDA device; detected {torch.cuda.device_count()} device(s)."
-                )
-            return normalized
-
-        xpu_match = re.fullmatch(r"xpu(?::(\d+))?", normalized)
-        if xpu_match:
-            if not cls._xpu_is_available():
-                raise ValueError(
-                    f"EMBEDDING_DEVICE={device!r} was requested, but Intel XPU "
-                    "is not available in the current PyTorch runtime."
-                )
-
-            index = xpu_match.group(1)
-            xpu = getattr(torch, "xpu")
-            if index is not None and int(index) >= xpu.device_count():
-                raise ValueError(
-                    f"EMBEDDING_DEVICE={device!r} refers to an unavailable "
-                    f"XPU device; detected {xpu.device_count()} device(s)."
-                )
-            return normalized
-
-        if normalized == "mps":
-            if not cls._mps_is_available():
-                raise ValueError(
-                    "EMBEDDING_DEVICE='mps' was requested, but Apple MPS is "
-                    "not available in the current PyTorch runtime."
-                )
-            return "mps"
-
         raise ValueError(
-            "EMBEDDING_DEVICE must be one of auto, cpu, gpu, cuda, cuda:N, "
-            "xpu, xpu:N, or mps."
+            "Embedding service is CPU-only. Leave EMBEDDING_DEVICE unset or "
+            "set it to 'cpu'."
         )
 
     def _read_model_dimension(self) -> int | None:
@@ -308,7 +217,7 @@ async def lifespan(_app: FastAPI):
     provider = EmbeddingModelService(
         model_name_or_path=env_str("EMBEDDING_MODEL", "./models/bge-m3")
         or "./models/bge-m3",
-        device=env_str("EMBEDDING_DEVICE", "auto") or "auto",
+        device=env_str("EMBEDDING_DEVICE", "cpu") or "cpu",
         concurrency=env_int("EMBEDDING_CONCURRENCY", 1),
         batch_size=env_int("EMBEDDING_BATCH_SIZE", 32),
     )

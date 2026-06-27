@@ -20,42 +20,23 @@ from memory_agent import (
 )
 from memory_agent.chainlit_ui import (
     ASSISTANT_AUTHOR,
-    answer_text,
     content_to_text,
     event_output_to_text,
     extract_token_usage,
-    format_memory_card,
     format_response_latency,
     format_token_usage,
-    get_last_memory_hits,
     get_session_thread_id,
     get_session_user_id,
     init_session,
-    memory_actions,
-    message_actions,
-    remove_memory_hit,
     resume_session,
-    serialize_memory,
-    store_last_memory_hit_dicts,
-    store_last_memory_hits,
 )
 from memory_agent.llm import close_llm_clients
-from memory_agent.long_term_memory.taxonomy import (
-    MEMORY_TYPE_VALUES,
-    memory_namespace,
-    normalize_memory_type,
-)
 
 
 load_dotenv(dotenv_path=".env", override=False)
 settings = load_settings()
 logger = logging.getLogger(__name__)
 
-
-if not settings.chainlit_database_url:
-    raise RuntimeError(
-        "CHAINLIT_DATABASE_URL is required to enable Chainlit chat history."
-    )
 
 if (
     not settings.chainlit_auth_secret
@@ -206,66 +187,6 @@ async def ensure_graph():
             raise
 
 
-async def _safe_search_memories(
-    *,
-    user_id: str,
-    query: str = "",
-    limit: int = 20,
-    memory_type: str | None = None,
-):
-    """Search long-term memories across taxonomy namespaces safely."""
-
-    memory_types = (
-        [normalize_memory_type(memory_type)]
-        if memory_type
-        else list(MEMORY_TYPE_VALUES)
-    )
-
-    memories: list[Any] = []
-
-    for current_type in memory_types:
-        try:
-            memories.extend(
-                await store.asearch(
-                    memory_namespace(user_id, current_type),
-                    query=query,
-                    limit=limit,
-                )
-            )
-        except Exception:
-            logger.exception("Failed to search %s memories", current_type)
-
-    if query and query.strip():
-        memories.sort(
-            key=lambda mem: (
-                getattr(mem, "score", None)
-                if getattr(mem, "score", None) is not None
-                else -1.0
-            ),
-            reverse=True,
-        )
-    else:
-        memories = _sort_memories_latest_first(memories)
-
-    return memories[:limit]
-
-
-def _memory_updated_at(mem: Any) -> str:
-    """Return a sortable update timestamp from a memory item."""
-
-    value = getattr(mem, "value", {}) or {}
-    if not isinstance(value, dict):
-        return ""
-
-    return str(value.get("updated_at") or value.get("created_at") or "")
-
-
-def _sort_memories_latest_first(memories: list[Any]) -> list[Any]:
-    """Sort memory items by newest update timestamp first."""
-
-    return sorted(memories, key=_memory_updated_at, reverse=True)
-
-
 @cl.on_app_shutdown
 async def on_app_shutdown():
     """Release graph, memory-store, and LLM resources on shutdown."""
@@ -310,7 +231,6 @@ async def on_chat_start():
             f"- thread_id: `{thread_id}`\n\n"
             "你可以直接开始对话。"
         ),
-        actions=message_actions(),
     ).send()
 
 
@@ -337,10 +257,6 @@ async def on_message(message: cl.Message):
     user_id = get_session_user_id()
     thread_id = get_session_thread_id()
 
-    # Clear stale UI memory hits. The graph returns the actual memories
-    # injected into the model, which we store when call_model finishes.
-    store_last_memory_hit_dicts([])
-
     config = {
         "configurable": {
             "thread_id": thread_id,
@@ -358,7 +274,6 @@ async def on_message(message: cl.Message):
     response_msg = cl.Message(
         content="",
         author=ASSISTANT_AUTHOR,
-        actions=message_actions(),
     )
 
     streamed = False
@@ -434,16 +349,6 @@ async def on_message(message: cl.Message):
         response_finalized = True
         return True
 
-    def maybe_store_graph_memory_hits(output: Any) -> None:
-        """Store memory hits returned by the call_model graph node."""
-
-        if not isinstance(output, dict):
-            return
-
-        memory_hits = output.get("memory_hits")
-        if isinstance(memory_hits, list):
-            store_last_memory_hit_dicts(memory_hits)
-
     try:
         async for event in graph.astream_events(
             {
@@ -487,9 +392,6 @@ async def on_message(message: cl.Message):
                 if current_token_usage:
                     token_usage = current_token_usage
 
-                if event_type == "on_chain_end":
-                    maybe_store_graph_memory_hits(output)
-
                 final_text = event_output_to_text(output)
                 if final_text and not response_msg.content.strip():
                     mark_first_response_ready()
@@ -515,197 +417,6 @@ async def on_message(message: cl.Message):
         error_msg = cl.Message(
             author=ASSISTANT_AUTHOR,
             content="这轮回复已经输出，但后续处理时出现异常。请检查后端日志。",
-            actions=message_actions(),
         )
         await error_msg.send()
         await persist_message_step(error_msg)
-
-
-@cl.action_callback("show_memories")
-async def show_memories(action: cl.Action):
-    """Display the current user's long-term memories."""
-
-    user_id = get_session_user_id()
-
-    memories = await _safe_search_memories(
-        user_id=user_id,
-        query="",
-        limit=20,
-    )
-    memories = _sort_memories_latest_first(memories)
-    store_last_memory_hits(memories)
-
-    if not memories:
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content="当前没有长期记忆。",
-            actions=message_actions(),
-        ).send()
-        return
-
-    await cl.Message(
-        author=ASSISTANT_AUTHOR,
-        content=f"当前共有 `{len(memories)}` 条长期记忆。",
-        actions=message_actions(),
-    ).send()
-
-    for index, mem in enumerate(memories, start=1):
-        memory = serialize_memory(mem)
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content=format_memory_card(memory, index),
-            actions=memory_actions(mem.key, memory["value"].get("memory_type")),
-        ).send()
-
-
-@cl.action_callback("search_memories")
-async def search_memories(action: cl.Action):
-    """Prompt for a search query and display matching memories."""
-
-    user_id = get_session_user_id()
-    answer = await cl.AskUserMessage(
-        author=ASSISTANT_AUTHOR,
-        content="输入记忆检索关键词",
-        timeout=60,
-    ).send()
-    query = answer_text(answer)
-
-    if not query:
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content="未输入检索关键词。",
-            actions=message_actions(),
-        ).send()
-        return
-
-    memories = await _safe_search_memories(
-        user_id=user_id,
-        query=query,
-        limit=10,
-    )
-    store_last_memory_hits(memories)
-
-    if not memories:
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content=f"没有找到与 `{query}` 相关的长期记忆。",
-            actions=message_actions(),
-        ).send()
-        return
-
-    await cl.Message(
-        author=ASSISTANT_AUTHOR,
-        content=f"找到 `{len(memories)}` 条相关长期记忆。",
-        actions=message_actions(),
-    ).send()
-
-    for index, mem in enumerate(memories, start=1):
-        memory = serialize_memory(mem)
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content=format_memory_card(memory, index),
-            actions=memory_actions(mem.key, memory["value"].get("memory_type")),
-        ).send()
-
-
-@cl.action_callback("show_context")
-async def show_context(action: cl.Action):
-    """Display session identity and the latest model-injected memory hits."""
-
-    hits = get_last_memory_hits()
-
-    header = (
-        "### 当前状态\n"
-        f"**user_id**: `{get_session_user_id()}`\n"
-        f"**thread_id**: `{get_session_thread_id()}`\n"
-        f"**model**: `{settings.llm_model}`\n"
-        f"**最近记忆命中**: `{len(hits)}`"
-    )
-
-    await cl.Message(
-        author=ASSISTANT_AUTHOR,
-        content=header,
-        actions=message_actions(),
-    ).send()
-
-    for index, memory in enumerate(hits[:5], start=1):
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content=format_memory_card(memory, index),
-            actions=memory_actions(memory["key"], memory["value"].get("memory_type")),
-        ).send()
-
-
-@cl.action_callback("delete_memory")
-async def delete_memory(action: cl.Action):
-    """Confirm and delete a selected long-term memory."""
-
-    user_id = get_session_user_id()
-    memory_id = action.payload.get("memory_id")
-    memory_type = action.payload.get("memory_type")
-
-    if not memory_id:
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content="没有找到要删除的记忆 ID。",
-            actions=message_actions(),
-        ).send()
-        return
-
-    if not memory_type:
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content="没有找到这条记忆所属的 memory_type，无法定位 namespace。",
-            actions=message_actions(),
-        ).send()
-        return
-
-    namespace = memory_namespace(user_id, normalize_memory_type(memory_type))
-    memory = await store.aget(namespace, memory_id)
-    if memory is None:
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content=f"记忆 `{memory_id}` 已不存在。",
-            actions=message_actions(),
-        ).send()
-        return
-
-    confirmed = await cl.AskActionMessage(
-        author=ASSISTANT_AUTHOR,
-        content=(
-            "确认删除这条长期记忆？\n\n"
-            f"> {memory.value.get('content', '')}"
-        ),
-        actions=[
-            cl.Action(
-                name="confirm_delete_memory",
-                payload={"memory_id": memory_id, "memory_type": memory_type},
-                label="确认删除",
-                icon="trash-2",
-            ),
-            cl.Action(
-                name="cancel_delete_memory",
-                payload={},
-                label="取消",
-                icon="x",
-            ),
-        ],
-        timeout=30,
-    ).send()
-
-    if not confirmed or confirmed.get("name") != "confirm_delete_memory":
-        await cl.Message(
-            author=ASSISTANT_AUTHOR,
-            content="已取消删除。",
-            actions=message_actions(),
-        ).send()
-        return
-
-    await store.adelete(namespace, memory_id)
-    remove_memory_hit(memory_id)
-
-    await cl.Message(
-        author=ASSISTANT_AUTHOR,
-        content=f"已删除记忆 `{memory_id}`。",
-        actions=message_actions(),
-    ).send()

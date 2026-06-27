@@ -1,0 +1,6 @@
+[UI]
+name = "Memory Agent"
+custom_js = "/public/hide-message-actions.js"
+
+[meta]
+generated_by = "2.11.1"

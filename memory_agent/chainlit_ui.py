@@ -8,7 +8,6 @@ import chainlit as cl
 
 
 ASSISTANT_AUTHOR = "Memory Agent"
-LAST_MEMORY_HITS_KEY = "last_memory_hits"
 
 
 def _safe_int(value: Any) -> int | None:
@@ -167,48 +166,6 @@ def format_response_latency(seconds: float | None) -> str:
     return f"**LLM 首响耗时**: `{value}`"
 
 
-def message_actions() -> list[cl.Action]:
-    """Build action buttons attached to general assistant messages."""
-
-    return [
-        cl.Action(
-            name="show_memories",
-            payload={},
-            label="查看记忆",
-            tooltip="显示当前用户的长期记忆",
-            icon="database",
-        ),
-        cl.Action(
-            name="search_memories",
-            payload={},
-            label="搜索记忆",
-            tooltip="按关键词检索长期记忆",
-            icon="search",
-        ),
-        cl.Action(
-            name="show_context",
-            payload={},
-            label="当前状态",
-            tooltip="显示当前线程和最近一次记忆命中",
-            icon="activity",
-        ),
-    ]
-
-
-def memory_actions(memory_id: str, memory_type: str | None) -> list[cl.Action]:
-    """Build action buttons attached to a single memory card."""
-
-    return [
-        cl.Action(
-            name="delete_memory",
-            payload={"memory_id": memory_id, "memory_type": memory_type or ""},
-            label="删除",
-            tooltip="删除这条长期记忆",
-            icon="trash-2",
-        )
-    ]
-
-
 def get_authenticated_user_id() -> str:
     """Return the authenticated Chainlit user identifier."""
 
@@ -267,7 +224,6 @@ def init_session(
 
     cl.user_session.set("user_id", user_id)
     cl.user_session.set("thread_id", thread_id)
-    cl.user_session.set(LAST_MEMORY_HITS_KEY, [])
 
     return user_id, thread_id
 
@@ -288,9 +244,6 @@ def resume_session(
 
     cl.user_session.set("user_id", user_id)
     cl.user_session.set("thread_id", thread_id)
-
-    if cl.user_session.get(LAST_MEMORY_HITS_KEY) is None:
-        cl.user_session.set(LAST_MEMORY_HITS_KEY, [])
 
     return user_id, thread_id
 
@@ -313,46 +266,6 @@ def get_session_thread_id() -> str:
     thread_id = get_current_chainlit_thread_id()
     cl.user_session.set("thread_id", thread_id)
     return thread_id
-
-
-def serialize_memory(mem) -> dict[str, Any]:
-    """Convert a MemoryItem-like object into a UI-safe dictionary."""
-
-    return {
-        "key": mem.key,
-        "value": mem.value,
-        "score": mem.score,
-    }
-
-
-def store_last_memory_hits(memories) -> None:
-    """Store recently displayed MemoryItem objects in the Chainlit session."""
-
-    cl.user_session.set(
-        LAST_MEMORY_HITS_KEY,
-        [serialize_memory(mem) for mem in memories],
-    )
-
-
-def store_last_memory_hit_dicts(memories: list[dict[str, Any]]) -> None:
-    """Store already-serialized memory hits in the Chainlit session."""
-
-    cl.user_session.set(LAST_MEMORY_HITS_KEY, memories)
-
-
-def get_last_memory_hits() -> list[dict[str, Any]]:
-    """Return the latest memory hits cached in the Chainlit session."""
-
-    return cl.user_session.get(LAST_MEMORY_HITS_KEY) or []
-
-
-def remove_memory_hit(memory_id: str) -> None:
-    """Remove one memory id from the cached memory hits."""
-
-    cl.user_session.set(
-        LAST_MEMORY_HITS_KEY,
-        [memory for memory in get_last_memory_hits() if memory["key"] != memory_id],
-    )
 
 
 def content_to_text(content: Any) -> str:
@@ -415,68 +328,3 @@ def event_output_to_text(output: Any) -> str:
             return event_output_to_text(first_generation)
 
     return ""
-
-
-def _format_metadata_list(value: Any) -> str:
-    """Format list-like metadata values for Markdown cards."""
-
-    if not value:
-        return ""
-
-    if isinstance(value, str):
-        return value
-
-    if isinstance(value, (list, tuple, set)):
-        return ", ".join(str(item) for item in value if str(item).strip())
-
-    return str(value)
-
-
-def format_memory_card(memory: dict[str, Any], index: int | None = None) -> str:
-    """Format one memory dictionary as a Markdown card."""
-
-    value = memory["value"]
-    score = memory.get("score")
-    title = f"### 记忆 {index}" if index is not None else "### 记忆"
-    score_line = f"\n**Score**: `{score:.3f}`" if score is not None else ""
-    memory_type = value.get("memory_type", "unknown")
-    category = value.get("category", "")
-    subject = value.get("subject", "")
-    entities = _format_metadata_list(value.get("entities"))
-    topics = _format_metadata_list(value.get("topics"))
-
-    metadata = (
-        f"**ID**: `{memory['key']}`\n"
-        f"**Type**: `{memory_type}`\n"
-        f"**Category**: `{category}`\n"
-        f"**Confidence**: `{value.get('confidence', 1.0)}`"
-        f"{score_line}\n"
-        f"**Updated**: `{value.get('updated_at', '')}`"
-    )
-
-    if subject:
-        metadata += f"\n**Subject**: `{subject}`"
-    if entities:
-        metadata += f"\n**Entities**: `{entities}`"
-    if topics:
-        metadata += f"\n**Topics**: `{topics}`"
-
-    return (
-        f"{title}\n"
-        f"{metadata}\n\n"
-        f"{value.get('content', '')}\n\n"
-        f"> {value.get('context', '') or '无额外上下文'}"
-    )
-
-
-def answer_text(answer: Any) -> str:
-    """Normalize the return value of a Chainlit ask prompt."""
-
-    if not answer:
-        return ""
-
-    if isinstance(answer, dict):
-        value = answer.get("output") or answer.get("content") or ""
-        return str(value).strip()
-
-    return str(answer).strip()
