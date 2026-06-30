@@ -10,8 +10,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from memory_agent.context_builder import (
+    build_conversation_transcript,
+    content_to_text,
+    truncate_text,
+)
 from memory_agent.llm import load_chat_model
 from memory_agent.long_term_memory.prompts import MEMORY_EXTRACTION_PROMPT
+from memory_agent.long_term_memory.retrieval import search_memory_namespaces
 from memory_agent.long_term_memory.taxonomy import (
     MEMORY_SCHEMA_VERSION,
     MEMORY_TYPE_VALUES,
@@ -25,6 +31,16 @@ from memory_agent.long_term_memory.taxonomy import (
 
 
 logger = logging.getLogger(__name__)
+
+EXTRACTION_MESSAGE_WINDOW = 8
+EXTRACTION_MAX_TOTAL_CHARS = 8_000
+EXTRACTION_MAX_MESSAGE_CHARS = 2_500
+MAX_EXISTING_MEMORY_FIELD_CHARS = 240
+MAX_MEMORY_CONTENT_CHARS = 600
+MAX_MEMORY_CONTEXT_CHARS = 300
+MAX_MEMORY_SUBJECT_CHARS = 120
+MAX_MEMORY_LIST_ITEM_CHARS = 80
+MAX_MEMORY_LIST_ITEMS = 8
 
 
 _SENSITIVE_TEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -216,6 +232,33 @@ def _decision_contains_sensitive_text(decision: MemoryDecision) -> bool:
     )
 
 
+def _normalize_memory_text(text: str | None, max_chars: int) -> str:
+    """Normalize and truncate memory text fields before storage or prompting."""
+
+    return truncate_text(str(text or "").strip(), max_chars)
+
+
+def _normalize_memory_list(values: object) -> list[str]:
+    """Normalize, deduplicate, and clamp memory list-like fields."""
+
+    normalized_values = normalize_str_list(values)
+    result: list[str] = []
+    seen: set[str] = set()
+
+    for value in normalized_values:
+        normalized = _normalize_memory_text(value, MAX_MEMORY_LIST_ITEM_CHARS)
+        if not normalized or normalized in seen:
+            continue
+
+        seen.add(normalized)
+        result.append(normalized)
+
+        if len(result) >= MAX_MEMORY_LIST_ITEMS:
+            break
+
+    return result
+
+
 def _format_existing_memories(memories: list[Any]) -> str:
     """Format existing memories for the extractor while filtering secrets."""
 
@@ -226,9 +269,18 @@ def _format_existing_memories(memories: list[Any]) -> str:
 
     for mem in memories:
         value = getattr(mem, "value", {}) or {}
-        content = str(value.get("content", ""))
-        context = str(value.get("context", ""))
-        subject = str(value.get("subject", ""))
+        content = _normalize_memory_text(
+            value.get("content", ""),
+            MAX_EXISTING_MEMORY_FIELD_CHARS,
+        )
+        context = _normalize_memory_text(
+            value.get("context", ""),
+            MAX_EXISTING_MEMORY_FIELD_CHARS,
+        )
+        subject = _normalize_memory_text(
+            value.get("subject", ""),
+            MAX_EXISTING_MEMORY_FIELD_CHARS,
+        )
         memory_type = normalize_memory_type(value.get("memory_type"))
         category = normalize_category(value.get("category"), memory_type=memory_type)
 
@@ -251,27 +303,6 @@ def _format_existing_memories(memories: list[Any]) -> str:
     return "\n".join(lines) if lines else "No existing memories."
 
 
-def _content_to_text(content: Any) -> str:
-    """Convert message content variants into plain text."""
-
-    if content is None:
-        return ""
-
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        parts: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                parts.append(str(part.get("text") or part.get("content") or ""))
-            else:
-                parts.append(str(part))
-        return "".join(parts)
-
-    return str(content)
-
-
 async def _search_existing_memories(
     *,
     store: Any,
@@ -281,22 +312,15 @@ async def _search_existing_memories(
 ) -> list[Any]:
     """Search across taxonomy namespaces for possible updates/duplicates."""
 
-    found: list[Any] = []
-
-    for memory_type in MEMORY_TYPE_VALUES:
-        try:
-            found.extend(
-                await store.asearch(
-                    memory_namespace(user_id, memory_type),
-                    query=query,
-                    limit=per_type_limit,
-                )
-            )
-        except Exception:
-            logger.exception(
-                "Failed to search existing %s memories during extraction",
-                memory_type,
-            )
+    namespace_limits = [
+        (memory_namespace(user_id, memory_type), per_type_limit)
+        for memory_type in MEMORY_TYPE_VALUES
+    ]
+    found = await search_memory_namespaces(
+        store=store,
+        namespace_limits=namespace_limits,
+        query=query,
+    )
 
     found.sort(
         key=lambda mem: (
@@ -317,19 +341,22 @@ async def consolidate_memories(
     model_name: str,
     thread_id: str | None = None,
     debug: bool = False,
+    message_window: int = 20,
+    message_char_window: int = 16000,
+    message_max_chars: int = 4000,
 ) -> list[MemoryDecision]:
-    """Extract, reconcile, and store durable memories from the latest user message."""
+    """Extract, reconcile, and store durable memories from recent conversation."""
 
     latest_user_message = next(
         (
             m
             for m in reversed(messages)
-            if getattr(m, "type", None) == "human"
+            if str(getattr(m, "type", "")).lower() == "human"
         ),
         None,
     )
 
-    user_text = _content_to_text(getattr(latest_user_message, "content", ""))
+    user_text = content_to_text(getattr(latest_user_message, "content", "")).strip()
 
     if not user_text.strip():
         return []
@@ -342,16 +369,40 @@ async def consolidate_memories(
             print("\n=== Memory Consolidator skipped sensitive-looking input ===")
         return []
 
+    extraction_window = max(2, min(int(message_window), EXTRACTION_MESSAGE_WINDOW))
+    extraction_char_window = min(
+        max(1, int(message_char_window)),
+        EXTRACTION_MAX_TOTAL_CHARS,
+    )
+    extraction_message_chars = min(
+        max(1, int(message_max_chars)),
+        EXTRACTION_MAX_MESSAGE_CHARS,
+    )
+    latest_user_message_text = truncate_text(user_text, extraction_message_chars)
+    conversation_transcript = build_conversation_transcript(
+        messages,
+        extraction_window,
+        max_total_chars=extraction_char_window,
+        max_message_chars=extraction_message_chars,
+    )
+
     existing = await _search_existing_memories(
         store=store,
         user_id=user_id,
-        query=user_text,
+        query=latest_user_message_text,
     )
+    existing_by_id = {
+        str(getattr(memory, "key", "")): memory
+        for memory in existing
+        if getattr(memory, "key", None)
+    }
 
     prompt = MEMORY_EXTRACTION_PROMPT.format(
         memory_taxonomy=taxonomy_prompt(),
         existing_memories=_format_existing_memories(existing),
-        user_text=user_text,
+        conversation_transcript=conversation_transcript
+        or "No recent conversation context.",
+        latest_user_message=latest_user_message_text,
     )
 
     llm = load_chat_model(model_name, streaming=False)
@@ -423,22 +474,47 @@ async def consolidate_memories(
                 print("\n=== Memory Consolidator skipped sensitive-looking decision ===")
             continue
 
+        existing_memory = None
+        if decision.action == "update" and decision.memory_id:
+            existing_memory = existing_by_id.get(decision.memory_id)
+
+        if decision.action == "update" and existing_memory is None:
+            logger.warning(
+                "Memory extraction requested update for unknown memory_id=%r; "
+                "saving as create instead.",
+                decision.memory_id,
+            )
+
         memory_type = normalize_memory_type(decision.memory_type)
+        if existing_memory is not None:
+            existing_value = getattr(existing_memory, "value", {}) or {}
+            memory_type = normalize_memory_type(
+                existing_value.get("memory_type"),
+                default=memory_type,
+            )
+
         category = normalize_category(decision.category, memory_type=memory_type)
 
-        mem_id = decision.memory_id if decision.action == "update" else None
-        mem_id = mem_id or str(uuid.uuid4())
+        mem_id = existing_memory.key if existing_memory is not None else str(uuid.uuid4())
+        content = _normalize_memory_text(decision.content, MAX_MEMORY_CONTENT_CHARS)
+        context = _normalize_memory_text(decision.context, MAX_MEMORY_CONTEXT_CHARS)
+        subject = _normalize_memory_text(decision.subject, MAX_MEMORY_SUBJECT_CHARS)
+        entities = _normalize_memory_list(decision.entities)
+        topics = _normalize_memory_list(decision.topics)
+
+        if not content:
+            continue
 
         now = datetime.now(timezone.utc).isoformat()
         value = {
             "schema_version": MEMORY_SCHEMA_VERSION,
             "memory_type": memory_type,
-            "content": decision.content,
-            "context": decision.context or "",
+            "content": content,
+            "context": context,
             "category": category,
-            "subject": decision.subject.strip(),
-            "entities": decision.entities,
-            "topics": decision.topics,
+            "subject": subject,
+            "entities": entities,
+            "topics": topics,
             "confidence": decision.confidence,
             "source": {
                 "type": "conversation",

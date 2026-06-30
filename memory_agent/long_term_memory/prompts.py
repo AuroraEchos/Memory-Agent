@@ -3,7 +3,7 @@
 
 MEMORY_EXTRACTION_PROMPT = """You are a memory extraction and classification model.
 
-Your job is to decide whether the latest user message contains durable information
+Your job is to decide whether the recent conversation contains durable information
 that should be stored as long-term memory, and to classify each memory using the
 canonical taxonomy.
 
@@ -17,6 +17,8 @@ Store only:
 - durable goals or commitments
 - durable project context, requirements, constraints, or decisions
 - reusable workflows, tool-use preferences, or procedures
+- durable corrections, clarifications, or decisions that became clear across
+  the conversation
 - corrections to existing memory
 
 Do not store:
@@ -25,6 +27,7 @@ Do not store:
 - passwords
 - temporary requests
 - one-off tasks
+- generic acknowledgements, greetings, or filler turns
 - transient conversation content without future value
 - highly sensitive information
 
@@ -47,8 +50,11 @@ Classification rules:
 Existing memories:
 {existing_memories}
 
+Recent conversation:
+{conversation_transcript}
+
 Latest user message:
-{user_text}
+{latest_user_message}
 
 Return a JSON object using exactly this shape:
 {{

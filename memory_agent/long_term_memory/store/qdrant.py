@@ -519,6 +519,19 @@ class QdrantMemoryStore:
                 metadata_filter = legacy_filter
 
         limit = max(1, int(limit))
+        query_vector = kwargs.get("query_vector")
+
+        if query_vector is not None:
+            validated_query_vector = self._validate_vector(
+                [float(value) for value in query_vector]
+            )
+            return await asyncio.to_thread(
+                self._search_sync,
+                namespace,
+                validated_query_vector,
+                limit,
+                metadata_filter,
+            )
 
         if not query or not query.strip():
             return await asyncio.to_thread(

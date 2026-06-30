@@ -265,6 +265,8 @@ async def on_message(message: cl.Message):
         model=settings.llm_model,
         debug=settings.debug,
         message_window=settings.conversation_message_window,
+        message_char_window=settings.conversation_char_window,
+        message_max_chars=settings.conversation_message_max_chars,
     )
 
     response_msg = cl.Message(

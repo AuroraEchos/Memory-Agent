@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import defaultdict
 from typing import Any
 
+from memory_agent.context_builder import content_to_text, truncate_text
 from memory_agent.long_term_memory.store.base import MemoryItem, MemoryStore
 from memory_agent.long_term_memory.taxonomy import (
     MAX_INJECTED_MEMORIES,
@@ -20,26 +22,20 @@ from memory_agent.long_term_memory.taxonomy import (
 
 logger = logging.getLogger(__name__)
 
-
-def _content_to_text(content: Any) -> str:
-    """Convert message content variants into plain text for retrieval."""
-
-    if content is None:
-        return ""
-
-    if isinstance(content, str):
-        return content
-
-    if isinstance(content, list):
-        return "".join(_content_to_text(part) for part in content)
-
-    if isinstance(content, dict):
-        return str(content.get("text") or content.get("content") or content)
-
-    return str(content)
+MAX_MEMORY_QUERY_CHARS = 4_000
+MAX_FORMATTED_CONTENT_CHARS = 320
+MAX_FORMATTED_CONTEXT_CHARS = 180
+MAX_FORMATTED_SUBJECT_CHARS = 120
+MAX_FORMATTED_LIST_CHARS = 120
+MAX_FORMATTED_MEMORY_LINES = MAX_INJECTED_MEMORIES
 
 
-def build_memory_query(messages: list[Any], human_message_limit: int = 2) -> str:
+def build_memory_query(
+    messages: list[Any],
+    human_message_limit: int = 2,
+    *,
+    max_chars: int = MAX_MEMORY_QUERY_CHARS,
+) -> str:
     """Build a retrieval query from the latest non-empty human messages."""
 
     chunks: list[str] = []
@@ -49,14 +45,14 @@ def build_memory_query(messages: list[Any], human_message_limit: int = 2) -> str
         if getattr(message, "type", None) != "human":
             continue
 
-        text = _content_to_text(getattr(message, "content", "")).strip()
+        text = content_to_text(getattr(message, "content", "")).strip()
         if text:
             chunks.append(text)
 
         if len(chunks) >= limit:
             break
 
-    return "\n".join(reversed(chunks))
+    return truncate_text("\n".join(reversed(chunks)), max_chars)
 
 
 def _memory_score(memory: Any) -> float:
@@ -89,12 +85,88 @@ def _format_list(items: Any) -> str:
         return ""
 
     if isinstance(items, str):
-        return items
+        return truncate_text(items, MAX_FORMATTED_LIST_CHARS)
 
     if isinstance(items, (list, tuple, set)):
-        return ", ".join(str(item) for item in items if str(item).strip())
+        return truncate_text(
+            ", ".join(str(item) for item in items if str(item).strip()),
+            MAX_FORMATTED_LIST_CHARS,
+        )
 
-    return str(items)
+    return truncate_text(str(items), MAX_FORMATTED_LIST_CHARS)
+
+
+def _dedupe_key(memory: Any) -> str:
+    """Return a stable dedupe key for prompt injection."""
+
+    value = getattr(memory, "value", {}) or {}
+    memory_type = normalize_memory_type(value.get("memory_type"))
+    subject = str(value.get("subject", "")).strip().lower()
+    content = str(value.get("content", "")).strip().lower()
+    key = str(getattr(memory, "key", "")).strip()
+    return key or f"{memory_type}::{subject}::{content}"
+
+
+async def _build_shared_query_vector(
+    store: MemoryStore,
+    query: str,
+) -> list[float] | None:
+    """Compute one shared query embedding when the store exposes it."""
+
+    embedding_provider = getattr(store, "embedding_provider", None)
+    aembed = getattr(embedding_provider, "aembed", None)
+
+    if not callable(aembed):
+        return None
+
+    try:
+        return await aembed(query)
+    except Exception:
+        logger.exception(
+            "Shared memory query embedding failed; falling back to per-search embedding"
+        )
+        return None
+
+
+async def search_memory_namespaces(
+    *,
+    store: MemoryStore,
+    namespace_limits: list[tuple[tuple[str, ...], int]],
+    query: str,
+    metadata_filter: dict[str, Any] | None = None,
+) -> list[MemoryItem]:
+    """Search multiple namespaces with one shared embedding when possible."""
+
+    if not query.strip():
+        return []
+
+    query_vector = await _build_shared_query_vector(store, query)
+    tasks = [
+        store.asearch(
+            namespace,
+            query=query,
+            limit=limit,
+            metadata_filter=metadata_filter,
+            query_vector=query_vector,
+        )
+        for namespace, limit in namespace_limits
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    memories: list[MemoryItem] = []
+
+    for (namespace, _limit), result in zip(namespace_limits, results):
+        if isinstance(result, Exception):
+            logger.error(
+                "Memory retrieval failed for namespace=%s",
+                "/".join(namespace),
+                exc_info=(type(result), result, result.__traceback__),
+            )
+            continue
+
+        memories.extend(result)
+
+    return memories
 
 
 def format_memories(memories: list[Any]) -> str:
@@ -104,7 +176,7 @@ def format_memories(memories: list[Any]) -> str:
         return "No relevant memories found."
 
     grouped: dict[str, list[Any]] = defaultdict(list)
-    for memory in memories:
+    for memory in memories[:MAX_FORMATTED_MEMORY_LINES]:
         value = getattr(memory, "value", {}) or {}
         memory_type = normalize_memory_type(value.get("memory_type"))
         grouped[memory_type].append(memory)
@@ -120,9 +192,20 @@ def format_memories(memories: list[Any]) -> str:
         for memory in type_memories:
             value = getattr(memory, "value", {}) or {}
             category = normalize_category(value.get("category"), memory_type=memory_type)
-            subject = str(value.get("subject", "")).strip()
+            subject = truncate_text(
+                str(value.get("subject", "")).strip(),
+                MAX_FORMATTED_SUBJECT_CHARS,
+            )
             entities = _format_list(value.get("entities"))
             topics = _format_list(value.get("topics"))
+            content = truncate_text(
+                str(value.get("content", "")),
+                MAX_FORMATTED_CONTENT_CHARS,
+            )
+            context = truncate_text(
+                str(value.get("context", "")),
+                MAX_FORMATTED_CONTEXT_CHARS,
+            )
 
             metadata_parts = [
                 f"id={memory.key}",
@@ -140,8 +223,8 @@ def format_memories(memories: list[Any]) -> str:
             lines.append(
                 "- "
                 + "; ".join(metadata_parts)
-                + f"; content={value.get('content', '')}; "
-                + f"context={value.get('context', '')}"
+                + f"; content={content}; "
+                + f"context={context}"
             )
 
     lines.append("</memories>")
@@ -159,24 +242,38 @@ async def retrieve_relevant_memories(
     if not query.strip():
         return []
 
-    memories: list[MemoryItem] = []
-
-    for memory_type in MEMORY_TYPE_VALUES:
-        try:
-            memories.extend(
-                await store.asearch(
-                    memory_namespace(user_id, memory_type),
-                    query=query,
-                    limit=MEMORY_RETRIEVAL_LIMITS[memory_type],
-                )
-            )
-        except Exception:
-            logger.exception("Memory retrieval failed for type=%s", memory_type)
+    namespace_limits = [
+        (
+            memory_namespace(user_id, memory_type),
+            MEMORY_RETRIEVAL_LIMITS[memory_type],
+        )
+        for memory_type in MEMORY_TYPE_VALUES
+    ]
+    memories = await search_memory_namespaces(
+        store=store,
+        namespace_limits=namespace_limits,
+        query=query,
+    )
 
     memories.sort(
         key=lambda memory: (
-            memory_type_rank((getattr(memory, "value", {}) or {}).get("memory_type")),
             -_memory_score(memory),
+            memory_type_rank((getattr(memory, "value", {}) or {}).get("memory_type")),
         )
     )
-    return memories[:MAX_INJECTED_MEMORIES]
+
+    deduped: list[MemoryItem] = []
+    seen: set[str] = set()
+
+    for memory in memories:
+        dedupe_key = _dedupe_key(memory)
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        deduped.append(memory)
+
+        if len(deduped) >= MAX_INJECTED_MEMORIES:
+            break
+
+    return deduped

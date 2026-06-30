@@ -62,6 +62,8 @@ async def call_model(state: State, runtime: Runtime[Context]) -> dict:
     context_messages = build_context_messages(
         state.messages,
         runtime.context.message_window,
+        max_total_chars=runtime.context.message_char_window,
+        max_message_chars=runtime.context.message_max_chars,
     )
 
     response = await llm.ainvoke(
@@ -91,6 +93,9 @@ async def extract_memory(state: State, runtime: Runtime[Context]) -> dict:
             model_name=runtime.context.model,
             thread_id=getattr(runtime.context, "thread_id", None),
             debug=runtime.context.debug,
+            message_window=runtime.context.message_window,
+            message_char_window=runtime.context.message_char_window,
+            message_max_chars=runtime.context.message_max_chars,
         )
     except Exception as exc:
         logger.exception("Memory consolidation failed")

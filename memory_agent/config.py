@@ -144,6 +144,8 @@ class AppSettings:
     chainlit_auth_user_id: str | None
 
     conversation_message_window: int
+    conversation_char_window: int
+    conversation_message_max_chars: int
     debug: bool
 
 
@@ -157,7 +159,7 @@ def load_settings() -> AppSettings:
         llm_temperature=env_float("LLM_TEMPERATURE", 0.7),
         llm_max_completion_tokens=env_int_any(
             ("LLM_MAX_COMPLETION_TOKENS", "LLM_MAX_TOKENS"),
-            2048,
+            1024,
         ),
         llm_timeout=env_int("LLM_TIMEOUT", 30),
         llm_trust_env=env_bool("LLM_TRUST_ENV", False),
@@ -190,6 +192,11 @@ def load_settings() -> AppSettings:
         chainlit_auth_user_id=env_str("CHAINLIT_AUTH_USER_ID"),
 
         conversation_message_window=env_int("CONVERSATION_MESSAGE_WINDOW", 20),
+        conversation_char_window=env_int("CONVERSATION_CHAR_WINDOW", 16000),
+        conversation_message_max_chars=env_int(
+            "CONVERSATION_MESSAGE_MAX_CHARS",
+            4000,
+        ),
         debug=env_bool("APP_DEBUG", False),
     )
 
@@ -217,6 +224,16 @@ class Context:
     message_window: int = field(
         default=20,
         metadata={"env": "CONVERSATION_MESSAGE_WINDOW"},
+    )
+
+    message_char_window: int = field(
+        default=16000,
+        metadata={"env": "CONVERSATION_CHAR_WINDOW"},
+    )
+
+    message_max_chars: int = field(
+        default=4000,
+        metadata={"env": "CONVERSATION_MESSAGE_MAX_CHARS"},
     )
 
     system_prompt: ClassVar[str] = SYSTEM_PROMPT

@@ -54,7 +54,11 @@ class MemoryStore(Protocol):
         metadata_filter: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> list[MemoryItem]:
-        """Search memory items by query text or list them when query is blank."""
+        """Search memory items by query text or list them when query is blank.
+
+        Implementations may accept optional kwargs such as `query_vector` to
+        reuse a precomputed embedding across multiple namespace searches.
+        """
 
         ...
 
